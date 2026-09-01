@@ -2,7 +2,7 @@ import React, { useState, useMemo, useRef, useEffect } from "react";
 import * as XLSX from "xlsx";
 import {
   ResponsiveContainer, ComposedChart, LineChart, BarChart, AreaChart,
-  Bar, Line, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend, PieChart, Pie, Cell,
+  Bar, Line, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend, PieChart, Pie, Cell, ReferenceLine,
 } from "recharts";
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
@@ -1051,16 +1051,385 @@ function TeamManager({ data, teams, multiTeam, onClose, onSplit, onAdd, onRename
   );
 }
 
-/* ===== STUBS — reconstructed in later checkpoints ===== */
-const extractBrandFromLogo = async () => null;
-function downloadPDF() {}
-function RecProfile({ onClose }) { useEscClose(onClose); return <div className="modal-back" onClick={onClose}><div className="modal" onClick={(e) => e.stopPropagation()}><div className="modal-body">Recruiter profile — pending reconstruction.</div></div></div>; }
+/* ============================ TAB VIEWS ============================ */
+function Overview({ d, s, wk, ytd, onNav, cfg, teamBoard, onPickTeam, youTeam }) {
+  const on = (id) => widgetOn(cfg || DEFAULT_CONFIG, id);
+  const u = d.teamGoals, f = d.sales;
+  const [mode, setMode] = useState("this");
+  const best = (u.totalGM || []).length ? u.totalGM.reduce((N, M, L, I) => (M > I[N] ? L : N), 0) : 0;
+  const isBest = mode === "best";
+  const m = isBest ? best : (wk || d.currentWeek) - 1;
+  const isYtd = isBest ? false : ytd;
+  const val = (N) => (isYtd ? sum(N || []) : (N || [])[m] || 0);
+  const delta = (N) => (isYtd ? undefined : pct((N || [])[m], (N || [])[m - 1]));
+  const subLabel = isBest ? "best week · W" + (best + 1) : ytd ? "YTD" : "vs prior wk";
+  const permGM = val(u.totalGM) - val(u.tempGM);
+  const paidDelta = isYtd ? (last(u.peoplePaid) || 0) - (u.peoplePaid[0] || 0) : (u.peoplePaid[m] || 0) - (u.peoplePaid[m - 1] || 0);
+  const lyKey = String((d._year || new Date().getFullYear()) - 1);
+  const ly = !isBest && d.archive && d.archive[lyKey] && d.archive[lyKey].teamGoals;
+  const lyLabel = "vs " + lyKey;
+  const yoy = (arr, lyArr) => {
+    if (!ly || !lyArr || !lyArr.length) return null;
+    const cur = isYtd ? sum((arr || []).slice(0, m + 1)) : (arr || [])[m] || 0;
+    const prev = isYtd ? sum(lyArr.slice(0, Math.min(m + 1, lyArr.length))) : m < lyArr.length ? lyArr[m] || 0 : null;
+    return prev == null || prev === 0 ? null : ((cur - prev) / Math.abs(prev)) * 100;
+  };
+  const permYoY = (() => {
+    if (!ly) return null;
+    const cumAt = (arr) => (isYtd ? sum((arr || []).slice(0, Math.min(m + 1, (arr || []).length))) : m < (arr || []).length ? (arr || [])[m] || 0 : null);
+    const kAt = (arr) => (isYtd ? sum((arr || []).slice(0, m + 1)) : (arr || [])[m] || 0);
+    const lyPerm = cumAt(ly.totalGM) != null && cumAt(ly.tempGM) != null ? cumAt(ly.totalGM) - cumAt(ly.tempGM) : null;
+    return lyPerm == null || lyPerm === 0 ? null : ((kAt(u.totalGM) - kAt(u.tempGM) - lyPerm) / Math.abs(lyPerm)) * 100;
+  })();
+  const latestPaid = (() => { const ee = u.peoplePaid || []; for (let K = (isYtd ? ee.length : m + 1) - 1; K >= 0; K--) if (ee[K]) return ee[K]; return 0; })();
+  return (
+    <>
+      <div className="ov-toggle">
+        <button className={isBest ? "" : "on"} onClick={() => setMode("this")}>This week</button>
+        <button className={isBest ? "on" : ""} onClick={() => setMode("best")}>Best week</button>
+      </div>
+      {teamBoard && teamBoard.length > 0 && on("ov_teamboard") && (
+        <div className="card tlb-card">
+          <div className="card-title">Team leaderboard <span className="card-hint">ranked by GM$ · pace vs annual goal</span>{onNav && <button className="tlb-viewall" onClick={() => onNav("Teams")}>View all teams →</button>}</div>
+          <TeamLeaderboard rows={teamBoard} compact youTeam={youTeam} onPick={onPickTeam} />
+        </div>
+      )}
+      {on("ov_insights") && <Insights d={d} />}
+      {on("ov_hero") && (
+        <div className="kpi-hero">
+          <KPI big label="Total GM$" value={fmtCur0(val(u.totalGM))} sub={subLabel} delta={delta(u.totalGM)} yoy={yoy(u.totalGM, ly && ly.totalGM)} yoyLabel={lyLabel} />
+          <KPI big label="Revenue (Bill)" value={fmtCur0(val(u.revenue))} sub={subLabel} delta={delta(u.revenue)} yoy={yoy(u.revenue, ly && ly.revenue)} yoyLabel={lyLabel} />
+          <KPI big label="Perm GM$" value={fmtCur0(permGM)} sub={subLabel} yoy={permYoY} yoyLabel={lyLabel} />
+          <KPI big label="People Paid" value={fmtNum(latestPaid)} sub={isBest ? subLabel : ytd ? "latest" : "headcount"} delta={delta(u.peoplePaid)} yoy={yoy(u.peoplePaid, ly && ly.peoplePaid)} yoyLabel={lyLabel} />
+        </div>
+      )}
+      {on("ov_strip") && (
+        <div className="kpi-strip">
+          <KPI label="People Paid +/-" value={(paidDelta >= 0 ? "+" : "") + paidDelta} sub={isBest ? subLabel : ytd ? "net YTD" : "vs prior wk"} />
+          <KPI label="Weekly Fill Rate" value={fmtPct((u.weeklyFill || [])[m] || 0)} sub="this week" />
+          <KPI label="Sales Calls" value={fmtNum(val(f.totalCalls))} sub={subLabel} delta={delta(f.totalCalls)} />
+          <KPI label="New Clients This Week" value={fmtNum((u.newClients || [])[m] || 0)} sub="this week" />
+        </div>
+      )}
+      {on("ov_progress") && <div className="grid-progress solo"><ProgressCard d={d} wk={wk} ytd={ytd} /></div>}
+      {on("ov_period") && <PeriodCompare d={d} />}
+      {on("ov_charts") && (
+        <div className="grid2">
+          <ChartCard title="Weekly gross margin vs budget">
+            <ComposedChart data={s.gmVsBudget}>
+              <CartesianGrid stroke="var(--grid)" vertical={false} />
+              <XAxis dataKey="w" {...axis} /><YAxis {...axis} tickFormatter={fmtCurK} />
+              <Tooltip {...tip()} formatter={(N) => fmtCur0(N)} />
+              <Bar dataKey="GM$" fill={C.blue} radius={[3, 3, 0, 0]} />
+              <Line dataKey="Budget" stroke={C.orange} strokeWidth={2} dot={false} />
+            </ComposedChart>
+          </ChartCard>
+          <ChartCard title="Cumulative GM$: 2026 vs 2025">
+            <LineChart data={s.cumRace}>
+              <CartesianGrid stroke="var(--grid)" vertical={false} />
+              <XAxis dataKey="w" {...axis} /><YAxis {...axis} tickFormatter={fmtCurK} />
+              <Tooltip {...tip()} formatter={(N) => fmtCur0(N)} /><Legend />
+              <Line dataKey="2026" stroke={C.blue} strokeWidth={2.5} dot={false} />
+              <Line dataKey="2025" stroke={C.faint} strokeWidth={2} strokeDasharray="4 4" dot={false} />
+            </LineChart>
+          </ChartCard>
+        </div>
+      )}
+    </>
+  );
+}
+
+function TeamGoals({ d, s, wk, ytd, cfg }) {
+  const on = (id) => widgetOn(cfg || DEFAULT_CONFIG, id);
+  const tg = d.teamGoals, o = (wk || d.currentWeek) - 1;
+  const val = (c) => (ytd ? sum(c) : c[o] || 0);
+  const gmPct = ytd ? (sum(tg.revenue) ? sum(tg.totalGM) / sum(tg.revenue) : 0) : tg.gmPct[o] || 0;
+  const ytdFill = ytd ? last(tg.ytdFill) || 0 : tg.ytdFill[o] || 0;
+  return (
+    <>
+      {on("tg_kpis") && (
+        <div className="kpis k4 tight">
+          <KPI label="Temp GM$" value={fmtCur0(val(tg.tempGM))} sub={ytd ? "YTD" : "this week"} />
+          <KPI label="Revenue (Bill)" value={fmtCur0(val(tg.revenue))} sub={ytd ? "YTD" : "this week"} />
+          <KPI label="GM% (Mark-Up)" value={fmtPct(gmPct)} sub="margin rate" />
+          <KPI label="YTD Fill" value={fmtPct(ytdFill)} sub="orders filled" />
+        </div>
+      )}
+      {on("tg_charts") && (
+        <div className="grid2">
+          <ChartCard title="Weekly gross margin vs budget">
+            <ComposedChart data={s.gmVsBudget}>
+              <CartesianGrid stroke="var(--grid)" vertical={false} />
+              <XAxis dataKey="w" {...axis} /><YAxis {...axis} tickFormatter={fmtCurK} />
+              <Tooltip {...tip()} formatter={(c) => fmtCur0(c)} />
+              <ReferenceLine y={ytd ? last(tg.budget) || 0 : tg.budget[o]} stroke={C.orange} strokeDasharray="4 4" />
+              <Bar dataKey="GM$" fill={C.blue} radius={[3, 3, 0, 0]} />
+              <Line dataKey="Budget" stroke={C.orange} strokeWidth={2} dot={false} />
+            </ComposedChart>
+          </ChartCard>
+          <ChartCard title="Cumulative GM$: 2026 vs 2025">
+            <LineChart data={s.cumRace}>
+              <CartesianGrid stroke="var(--grid)" vertical={false} />
+              <XAxis dataKey="w" {...axis} /><YAxis {...axis} tickFormatter={fmtCurK} />
+              <Tooltip {...tip()} formatter={(c) => fmtCur0(c)} /><Legend />
+              <Line dataKey="2026" stroke={C.blue} strokeWidth={2.5} dot={false} />
+              <Line dataKey="2025" stroke={C.faint} strokeWidth={2} strokeDasharray="4 4" dot={false} />
+            </LineChart>
+          </ChartCard>
+          <ChartCard title="Revenue & headcount">
+            <ComposedChart data={s.revHead}>
+              <CartesianGrid stroke="var(--grid)" vertical={false} />
+              <XAxis dataKey="w" {...axis} />
+              <YAxis yAxisId="l" {...axis} tickFormatter={fmtCurK} />
+              <YAxis yAxisId="r" orientation="right" {...axis} />
+              <Tooltip {...tip()} /><Legend />
+              <Area yAxisId="l" dataKey="Revenue" stroke={C.sky} fill={C.sky} fillOpacity={0.18} strokeWidth={2} />
+              <Line yAxisId="r" dataKey="Headcount" stroke={C.orange} strokeWidth={2} dot={false} />
+            </ComposedChart>
+          </ChartCard>
+          <ChartCard title="Temp orders">
+            <BarChart data={s.tempOrders}>
+              <CartesianGrid stroke="var(--grid)" vertical={false} />
+              <XAxis dataKey="w" {...axis} /><YAxis {...axis} /><Tooltip {...tip()} /><Legend />
+              <Bar dataKey="New" stackId="a" fill={C.blue} />
+              <Bar dataKey="Open" stackId="a" fill={C.sky} radius={[3, 3, 0, 0]} />
+            </BarChart>
+          </ChartCard>
+        </div>
+      )}
+    </>
+  );
+}
+
+const SCORECARD_COLS = [
+  { key: "gm", label: "Total GM$", cur: true, ytdAlways: true },
+  { key: "gm", label: "GM$ Week", cur: true },
+  { key: "interviews", label: "Interviews" },
+  { key: "registered", label: "Registered" },
+  { key: "submittals", label: "Submittals" },
+  { key: "clientInterviews", label: "Client Int." },
+  { key: "starts", label: "Starts" },
+  { key: "peoplePaid", label: "Paid", stock: true },
+];
+function RecruiterScorecard({ rc, i, ytd, onRecClick }) {
+  const [q, setQ] = useState("");
+  const rows = (rc.recruiters || []).map((o) => ({ name: o.name, r: o })).filter((o) => !q || o.name.toLowerCase().includes(q.toLowerCase()));
+  return (
+    <div className="card lb-card">
+      <div className="card-title">Recruiter scorecard<span className="card-hint">{ytd ? "YTD · full year" : "selected week"}</span><input className="tbl-search" placeholder="Search recruiter…" value={q} onChange={(e) => setQ(e.target.value)} /></div>
+      <div className="lb-scroll">
+        <table className="lb">
+          <thead><tr><th>Recruiter</th>{SCORECARD_COLS.map((o, l) => <th key={l} className="num">{o.label}</th>)}</tr></thead>
+          <tbody>
+            {rows.map(({ name, r }) => (
+              <tr key={name} className={onRecClick ? "lb-row" : ""} onClick={() => onRecClick && onRecClick(r)}>
+                <td className="rep-name">{name}</td>
+                {SCORECARD_COLS.map((col, u) => { const c = r[col.key] || []; const v = col.ytdAlways ? sum(c) : col.stock ? (ytd ? last(c) || 0 : c[i] || 0) : (ytd ? sum(c) : c[i] || 0); return <td key={u} className="num">{col.cur ? fmtCur0(v) : fmtNum(v)}</td>; })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function Recruitment({ d, s, wk, ytd, cfg }) {
+  const on = (id) => widgetOn(cfg || DEFAULT_CONFIG, id);
+  const rc = d.recruitment, tg = d.teamGoals, l = (wk || d.currentWeek) - 1;
+  const [prof, setProf] = useState(null);
+  const paidDelta = ytd ? (last(tg.peoplePaid) || 0) - (tg.peoplePaid[0] || 0) : (tg.peoplePaid[l] || 0) - (tg.peoplePaid[l - 1] || 0);
+  return (
+    <>
+      {on("rc_kpis") && (
+        <div className="kpis k5 tight">
+          <KPI label="People Paid By Current Recruiters" value={fmtNum(ytd ? last(rc.total.paidByRecruiter) || 0 : rc.total.paidByRecruiter[l])} sub={ytd ? "latest week" : "selected week"} />
+          <KPI label="House People Paid" value={fmtNum(ytd ? last(rc.total.paidHouse) || 0 : rc.total.paidHouse[l])} sub={ytd ? "latest week" : "selected week"} />
+          <KPI label="People Paid +/-" value={(paidDelta >= 0 ? "+" : "") + paidDelta} sub={ytd ? "net YTD" : "vs prior wk"} />
+          <KPI label="Starts" value={fmtNum(ytd ? sum(rc.total.starts) : rc.total.starts[l] || 0)} sub={ytd ? "YTD" : "selected week"} />
+          <KPI label="Ends" value={fmtNum(ytd ? sum(rc.total.ends) : rc.total.ends[l] || 0)} sub={ytd ? "YTD" : "selected week"} />
+        </div>
+      )}
+      {on("rc_open") && (
+        <div className="kpi-strip cols2">
+          <KPI label="Open Temp Order" value={fmtNum(ytd ? last(tg.openTempOrders) || 0 : (tg.openTempOrders || [])[l] || 0)} sub={ytd ? "latest" : "selected week"} />
+          <KPI label="Open Perm" value={fmtNum(ytd ? last(tg.openPerm) || 0 : (tg.openPerm || [])[l] || 0)} sub={ytd ? "latest" : "selected week"} />
+        </div>
+      )}
+      <div className="grid2">
+        {on("rc_funnel") && (
+          <ChartCard title="Recruiting funnel" hint="YTD">
+            <BarChart data={s.funnel} layout="vertical" margin={{ left: 24 }}>
+              <CartesianGrid stroke="var(--grid)" horizontal={false} />
+              <XAxis type="number" {...axis} />
+              <YAxis type="category" dataKey="stage" {...axis} width={80} />
+              <Tooltip {...tip()} />
+              <Bar dataKey="v" fill={C.blue} radius={[0, 4, 4, 0]} />
+            </BarChart>
+          </ChartCard>
+        )}
+        {on("rc_gm") && (
+          <ChartCard title="GM$ contribution by recruiter" hint="YTD">
+            <BarChart data={s.gmContrib}>
+              <CartesianGrid stroke="var(--grid)" vertical={false} />
+              <XAxis dataKey="name" {...axis} /><YAxis {...axis} tickFormatter={fmtCurK} />
+              <Tooltip {...tip()} formatter={(p) => fmtCur0(p)} />
+              <Bar dataKey="v" fill={C.blue} radius={[4, 4, 0, 0]} />
+            </BarChart>
+          </ChartCard>
+        )}
+        {on("rc_head") && (
+          <ChartCard title="Net headcount change" sm wide>
+            <BarChart data={s.netHC}>
+              <CartesianGrid stroke="var(--grid)" vertical={false} />
+              <XAxis dataKey="w" {...axis} /><YAxis {...axis} /><Tooltip {...tip()} />
+              <ReferenceLine y={0} stroke="var(--axis)" />
+              <Bar dataKey="Net" radius={[3, 3, 0, 0]}>{s.netHC.map((p, i) => <Cell key={i} fill={p.Net >= 0 ? C.green : C.rose} />)}</Bar>
+            </BarChart>
+          </ChartCard>
+        )}
+      </div>
+      {on("rc_scorecard") && <RecruiterScorecard rc={rc} i={l} ytd={ytd} onRecClick={setProf} />}
+      {prof && <RecProfile rec={prof} weekDates={tg.weekDates} onClose={() => setProf(null)} />}
+    </>
+  );
+}
+
+function Sales({ d, s, wk, ytd, onUpdateGM, cfg }) {
+  const on = (id) => widgetOn(cfg || DEFAULT_CONFIG, id);
+  const o = d.sales, l = (wk || d.currentWeek) - 1;
+  const [prof, setProf] = useState(null);
+  const [sel, setSel] = useState("All");
+  const v = (m) => (ytd ? sum(m || []) : (m || [])[l] || 0);
+  const firstOrderTotal = Object.values(o.repTotals || {}).reduce((m, x) => m + (+x.firstOrder || 0), 0);
+  const repSel = sel !== "All" && (o.repTotals || {})[sel];
+  const funnel = repSel
+    ? [{ label: "Total Calls", value: +repSel.calls || 0 }, { label: "Prospect DM Calls", value: +repSel.prospectDMCalls || 0 }, { label: "Prospect Meetings", value: +repSel.prospectMeetings || 0 }, { label: "Contracts Sent", value: +repSel.contracts || 0 }, { label: "Contracts Signed", value: +repSel.signed || 0 }, { label: "First Order", value: +repSel.firstOrder || 0 }, { label: "New Client", value: +repSel.newAccounts || 0 }]
+    : [{ label: "Total Calls", value: v(o.totalCalls) }, { label: "Prospect DM Calls", value: v(o.prospectDMCalls) }, { label: "Prospect Meetings", value: v(o.prospectMeetings) }, { label: "Contracts Sent", value: v(o.contractsSent) }, { label: "Contracts Signed", value: v(o.contractsSigned) }, { label: "First Order", value: firstOrderTotal }, { label: "New Client", value: v(o.newClients) }];
+  return (
+    <>
+      <div className="sales-funnel-layout">
+        {on("sa_funnel") && (
+          <div className="card vfunnel-card">
+            <div className="card-title">Sales funnel <span className="card-hint">{repSel ? "YTD · " + sel : ytd ? "YTD" : "this week"}</span></div>
+            <div className="vfunnel">{funnel.map((m, i) => <div key={m.label} className="vfunnel-row" style={{ width: 100 - i * 11 + "%" }}><span className="vfunnel-label">{m.label}</span><span className="vfunnel-val">{fmtNum(m.value)}</span></div>)}</div>
+          </div>
+        )}
+        {on("sa_conversion") && <SalesFocus d={d} s={s} sel={sel} setSel={setSel} />}
+      </div>
+      {on("sa_leaderboard") && <Leaderboard repTotals={o.repTotals} onRepClick={setProf} onUpdateGM={onUpdateGM} />}
+      {prof && <RepProfile rep={prof} d={d} onClose={() => setProf(null)} />}
+    </>
+  );
+}
+
+function RecProfile({ rec, weekDates, onClose }) {
+  useEscClose(onClose);
+  const n = (l) => rec[l] || [];
+  const len = Math.max(n("gm").length, n("starts").length, n("ends").length, (weekDates || []).length);
+  const data = Array.from({ length: len }, (_, A) => ({ w: (weekDates || [])[A] || "W" + (A + 1), GM: +n("gm")[A] || 0, Starts: +n("starts")[A] || 0, Ends: +n("ends")[A] || 0, Submittals: +n("submittals")[A] || 0 }));
+  const total = (l) => n(l).reduce((A, u) => A + (+u || 0), 0);
+  const stats = [["GM$", fmtCur0(total("gm"))], ["Starts", fmtNum(total("starts"))], ["Ends", fmtNum(total("ends"))], ["Interviews", fmtNum(total("interviews"))], ["Registered", fmtNum(total("registered"))], ["Submittals", fmtNum(total("submittals"))], ["Client Intvw", fmtNum(total("clientInterviews"))], ["People Paid", fmtNum(total("peoplePaid"))]];
+  return (
+    <div className="modal-back" onClick={onClose}>
+      <div className="modal wide" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head"><div className="modal-title">{rec.name} · recruiter profile</div><button className="x" onClick={onClose} aria-label="Close">×</button></div>
+        <div className="modal-body">
+          <div className="rp-totals">{stats.map(([l, A]) => <div key={l} className="rp-stat"><div className="rp-stat-v">{A}</div><div className="rp-stat-l">{l}</div></div>)}</div>
+          {len ? (
+            <div className="chart-wrap lg">
+              <ResponsiveContainer width="100%" height="100%">
+                <ComposedChart data={data} margin={{ left: 4, right: 10, top: 8, bottom: 0 }}>
+                  <CartesianGrid stroke="var(--grid)" vertical={false} />
+                  <XAxis dataKey="w" {...axis} />
+                  <YAxis yAxisId="l" {...axis} />
+                  <YAxis yAxisId="r" orientation="right" {...axis} tickFormatter={fmtCurK} />
+                  <Tooltip {...tip()} /><Legend />
+                  <Bar yAxisId="l" dataKey="Starts" stackId="a" fill={C.green} />
+                  <Bar yAxisId="l" dataKey="Ends" stackId="a" fill={C.rose} />
+                  <Bar yAxisId="l" dataKey="Submittals" stackId="a" fill={C.violet} radius={[3, 3, 0, 0]} />
+                  <Line yAxisId="r" dataKey="GM" stroke={C.blue} strokeWidth={2.5} dot={false} />
+                </ComposedChart>
+              </ResponsiveContainer>
+            </div>
+          ) : <div className="empty-hint">No weekly history yet for this recruiter.</div>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Extract a small logo + brand colors from an uploaded image file (async via callback).
+function extractBrandFromLogo(file, cb) {
+  const img = new Image();
+  img.onload = () => {
+    const cn = document.createElement("canvas"), i = 64;
+    cn.width = i; cn.height = i;
+    const ctx = cn.getContext("2d");
+    ctx.drawImage(img, 0, 0, i, i);
+    const px = ctx.getImageData(0, 0, i, i).data, buckets = {};
+    for (let f = 0; f < px.length; f += 4) {
+      const r = px[f], g = px[f + 1], b = px[f + 2];
+      if (px[f + 3] < 200) continue;
+      const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+      if (mx - mn < 18 || mx > 242 || mx < 26) continue;
+      const key = (r >> 4) + "," + (g >> 4) + "," + (b >> 4);
+      const bk = buckets[key] || (buckets[key] = { n: 0, r: 0, g: 0, b: 0 });
+      bk.n++; bk.r += r; bk.g += g; bk.b += b;
+    }
+    const colors = Object.values(buckets).sort((a, b) => b.n - a.n).slice(0, 3).map((c) => "#" + [c.r, c.g, c.b].map((x) => Math.round(x / c.n).toString(16).padStart(2, "0")).join(""));
+    const out = document.createElement("canvas"), max = 96, scale = Math.min(max / img.width, max / img.height, 1);
+    out.width = Math.max(1, Math.round(img.width * scale)); out.height = Math.max(1, Math.round(img.height * scale));
+    out.getContext("2d").drawImage(img, 0, 0, out.width, out.height);
+    cb({ logo: out.toDataURL("image/png"), logoColors: colors, primary: colors[0] || null, secondary: colors[1] || null });
+  };
+  img.src = URL.createObjectURL(file);
+}
+
+function downloadPDF(d, wkArg, ytd) {
+  const n = d.teamGoals, i = d.recruitment, a = d.sales;
+  const s = d.currentWeek || n.totalGM.length;
+  const o = (wkArg || s) - 1;
+  const l = (T) => (ytd ? sum(T || []) : (T || [])[o] || 0);
+  const doc = new jsPDF({ unit: "pt", format: "letter" });
+  const W = doc.internal.pageSize.getWidth();
+  const cfg = getConfig(d);
+  const primary = (cfg.theme && cfg.theme.primary) || (cfg.brand && cfg.brand.accent) || "#233041";
+  const rgb = [parseInt(primary.slice(1, 3), 16), parseInt(primary.slice(3, 5), 16), parseInt(primary.slice(5, 7), 16)];
+  const sub = ytd ? "YTD · Weeks 1–" + s : "Week " + (wkArg || s) + (n.weekDates && n.weekDates[o] ? " · ending " + n.weekDates[o] : "");
+  doc.setFont("helvetica", "bold"); doc.setFontSize(18); doc.setTextColor(20); doc.text(activeBrandName(d), 40, 50);
+  doc.setFont("helvetica", "normal"); doc.setFontSize(11); doc.setTextColor(110); doc.text(sub, 40, 68);
+  doc.setDrawColor(225); doc.line(40, 80, W - 40, 80);
+  const section = (title, head, body, y) => {
+    if (title) { doc.setFont("helvetica", "bold"); doc.setFontSize(12); doc.setTextColor(20); doc.text(title, 40, y); }
+    const colStyles = head.reduce((L, I, ee) => { L[ee] = { halign: ee ? "right" : "left" }; return L; }, {});
+    autoTable(doc, { startY: title ? y + 8 : y, head: [head], body, theme: "striped", headStyles: { fillColor: rgb, halign: "left" }, styles: { fontSize: 10, cellPadding: 5 }, columnStyles: colStyles, didParseCell: (L) => { if (L.section === "head" && L.column.index > 0) L.cell.styles.halign = "right"; }, margin: { left: 40, right: 40 } });
+    return doc.lastAutoTable.finalY;
+  };
+  const permGM = l(n.totalGM) - l(n.tempGM);
+  const fill = (n.weeklyFill || [])[o];
+  let y = section(null, ["Key metric", "Value"], [
+    ["Total GM$", fmtCur0(l(n.totalGM))], ["Revenue (Bill)", fmtCur0(l(n.revenue))], ["Perm GM$", fmtCur0(permGM)],
+    ["People Paid", fmtNum(ytd ? last(n.peoplePaid) || 0 : n.peoplePaid[o] || 0)],
+    ["Weekly Fill Rate", fill != null ? fmtPct(fill) : "—"], ["New Clients (this week)", fmtNum((n.newClients || [])[o] || 0)],
+    ["Open Temp Orders", fmtNum(ytd ? last(n.openTempOrders) || 0 : n.openTempOrders[o] || 0)],
+    ["Starts / Ends", (ytd ? sum(i.total.starts) : i.total.starts[o] || 0) + " / " + (ytd ? sum(i.total.ends) : i.total.ends[o] || 0)],
+  ], 92);
+  y = section("Recruiters", ["Recruiter", "GM$", "Starts", "Ends"], (i.recruiters || []).map((T) => [T.name, fmtCur0(ytd ? sum(T.gm) : (T.gm || [])[o] || 0), fmtNum(ytd ? sum(T.starts) : (T.starts || [])[o] || 0), fmtNum(ytd ? sum(T.ends) : (T.ends || [])[o] || 0)]), y + 22);
+  const firstOrder = Object.values(a.repTotals || {}).reduce((T, E) => T + (+E.firstOrder || 0), 0);
+  y = section("Sales funnel", ["Stage", "Count"], [
+    ["Total Calls", fmtNum(l(a.totalCalls))], ["Prospect DM Calls", fmtNum(l(a.prospectDMCalls))], ["Prospect Meetings", fmtNum(l(a.prospectMeetings))],
+    ["Contracts Sent", fmtNum(l(a.contractsSent))], ["Contracts Signed", fmtNum(l(a.contractsSigned))], ["First Order", fmtNum(firstOrder)], ["New Client", fmtNum(l(a.newClients))],
+  ], y + 22);
+  const repRows = Object.entries(a.repTotals || {}).map(([T, E]) => ({ rep: T, v: E })).sort((T, E) => (+E.v.gm || 0) - (+T.v.gm || 0)).map(({ rep: T, v: E }) => [T, fmtNum(+E.calls || 0), fmtNum(+E.signed || 0), fmtNum(+E.newAccounts || 0), fmtCur0(+E.gm || 0)]);
+  y = section("Sales leaderboard", ["Rep", "Calls", "Signed", "New Accts", "New GM$"], repRows, y + 22);
+  const pages = doc.internal.getNumberOfPages();
+  for (let T = 1; T <= pages; T++) { doc.setPage(T); doc.setFont("helvetica", "normal"); doc.setFontSize(8); doc.setTextColor(150); doc.text("Generated " + new Date().toLocaleDateString() + " · " + activeBrandName(d), 40, doc.internal.pageSize.getHeight() - 24); }
+  doc.save(brandSlug(d) + "-" + (ytd ? "YTD" : "Week-" + (wkArg || s)) + "-" + dateStamp() + ".pdf");
+}
+
+/* ===== STILL STUBBED — reconstructed in checkpoint 4 ===== */
 function Commission() { return null; }
-function Overview(props) { return <div className="empty-hint">Overview — pending reconstruction.</div>; }
-function TeamGoals() { return <div className="empty-hint">Team Goals — pending reconstruction.</div>; }
-function Recruitment() { return <div className="empty-hint">Recruitment — pending reconstruction.</div>; }
-function Sales() { return <div className="empty-hint">Sales — pending reconstruction.</div>; }
-function RecruiterScorecard() { return <div className="empty-hint">Recruiter scorecard — pending reconstruction.</div>; }
 function AddWeekModal({ onClose }) { useEscClose(onClose); return <div className="modal-back" onClick={onClose}><div className="modal" onClick={(e) => e.stopPropagation()}><div className="modal-body">Add week — pending reconstruction.</div></div></div>; }
 function SettingsPanel({ onClose }) { useEscClose(onClose); return <div className="modal-back" onClick={onClose}><div className="modal" onClick={(e) => e.stopPropagation()}><div className="modal-body">Settings — pending reconstruction.</div></div></div>; }
 function SetupWizard() { return <div className="empty-hint">Setup wizard — pending reconstruction.</div>; }
