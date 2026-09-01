@@ -4,7 +4,7 @@ A multi-tenant staffing-agency performance dashboard. Front end is a single
 self-contained HTML file (React, bundled with esbuild); backend is Supabase
 (auth, Postgres, row-level security); hosting is one static file on Netlify.
 
-**Live site:** https://staffingdashboard.netlify.app
+**Live site:** https://weeklyperformancebook.netlify.app/
 **Supabase project:** `ifykttcsgsvrvvyozwog` (free tier — auto-pauses after ~7 days idle; resume from the Supabase dashboard, data is preserved).
 
 ## Deploy / redeploy the site
