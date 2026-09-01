@@ -1428,11 +1428,236 @@ function downloadPDF(d, wkArg, ytd) {
   doc.save(brandSlug(d) + "-" + (ytd ? "YTD" : "Week-" + (wkArg || s)) + "-" + dateStamp() + ".pdf");
 }
 
-/* ===== STILL STUBBED — reconstructed in checkpoint 4 ===== */
-function Commission() { return null; }
-function AddWeekModal({ onClose }) { useEscClose(onClose); return <div className="modal-back" onClick={onClose}><div className="modal" onClick={(e) => e.stopPropagation()}><div className="modal-body">Add week — pending reconstruction.</div></div></div>; }
-function SettingsPanel({ onClose }) { useEscClose(onClose); return <div className="modal-back" onClick={onClose}><div className="modal" onClick={(e) => e.stopPropagation()}><div className="modal-body">Settings — pending reconstruction.</div></div></div>; }
-function SetupWizard() { return <div className="empty-hint">Setup wizard — pending reconstruction.</div>; }
+/* ===================== SETTINGS / SETUP / ADD-WEEK ===================== */
+function NumField({ label, value, onChange }) {
+  return <label className="nf"><span>{label}</span><input type="number" inputMode="decimal" step="any" value={value} onChange={(e) => onChange(e.target.value)} /></label>;
+}
+const TG_ENTRY_LABELS = { revenue: "Revenue / Bill ($)", tempGM: "Temp GM$ (Margin)", totalGM: "Total GM$", budget: "Weekly Budget ($)", hours: "Weekly Hours", peoplePaid: "People Paid (Headcount)", clientsBilled: "Clients Billed", newClients: "New Clients", newTempOrders: "New Temp Orders", openTempOrders: "Open Temp Orders", openPerm: "Open Perm Orders", weeklyFill: "Weekly Fill Rate (0–1)" };
+const REC_ENTRY_LABELS = { gm: "GM$", peoplePaid: "Paid", starts: "Starts", ends: "Ends", interviews: "Interviews", registered: "Registered", submittals: "Submittals", clientInterviews: "Client Int." };
+const SALES_ENTRY_LABELS = { totalCalls: "Total Calls", prospectTouches: "Prospect Touches", clientTouches: "Client Touches", prospectEmails: "Prospect Emails", clientEmails: "Client Emails", prospectMeetings: "Prospect Meetings", clientMeetings: "Client Meetings", contractsSent: "Contracts Sent", contractsSigned: "Contracts Signed", newClients: "New Clients", prospectDMCalls: "Prospect DM Calls" };
+const REP_FIELD_LABELS = { calls: "Prospect Attempts", prospectDMCalls: "DM Calls", prospectMeetings: "Prospect Mtg", clientMeetings: "Client Mtg", contracts: "Sent", signed: "Signed", firstOrder: "First Order", newAccounts: "New Accts", gm: "GM$", prospectTouches: "Prospect Touch", clientTouches: "Client Touch" };
+
+function SettingsPanel({ data, cfg, onPreview, onSave, onClose, dark, setDark, onDeleteWeek, onReset, weekCount }) {
+  useEscClose(onClose);
+  const [draft, setDraft] = useState(() => JSON.parse(JSON.stringify(cfg)));
+  const [confirmDel, setConfirmDel] = useState(false);
+  const [confirmReset, setConfirmReset] = useState(false);
+  const update = (fn) => setDraft((prev) => { const L = JSON.parse(JSON.stringify(prev)); fn(L); onPreview(L); return L; });
+  const setTemplate = (N) => update((M) => { M.template = N; const L = TEMPLATES[N]; if (L && L.tabs) { M.tabs = { ...L.tabs }; M.widgets = {}; WIDGET_REGISTRY.forEach((I) => { if (I.id in (L.widgets || {})) M.widgets[I.id] = L.widgets[I.id]; }); } });
+  const setColor = (N, M) => update((L) => { if (M) L.theme[N] = M; else delete L.theme[N]; });
+  const getColor = (N) => draft.theme[N] || "";
+  const [sec, setSec] = useState("Layout");
+  const sections = ["Layout", "Branding", "Theme", "Display", "Danger"];
+  const fileRef = useRef(null);
+  const onLogoFile = (e) => { const file = e.target.files && e.target.files[0]; if (file) { extractBrandFromLogo(file, (L) => update((I) => { if (L.primary) I.theme.primary = L.primary; if (L.secondary) I.theme.secondary = L.secondary; I.brand = { ...(I.brand || {}), logo: L.logo, logoColors: L.logoColors }; })); e.target.value = ""; } };
+  return (
+    <div className="modal-back" onClick={onClose}>
+      <div className="modal wide settings" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head"><div className="modal-title">Dashboard settings</div><button className="x" onClick={onClose} aria-label="Close">×</button></div>
+        <div className="set-nav">{sections.map((N) => <button key={N} className={"seg-btn" + (sec === N ? " on" : "")} onClick={() => setSec(N)}>{N}</button>)}</div>
+        <div className="modal-body">
+          {sec === "Layout" && (
+            <>
+              <div className="set-sec">
+                <div className="set-h">Template</div>
+                <div className="set-hint">Presets that set which tabs and widgets show. You can still fine-tune everything below after picking one.</div>
+                <div className="seg">{Object.entries(TEMPLATES).map(([N, M]) => <button key={N} className={"seg-btn" + (draft.template === N ? " on" : "")} onClick={() => setTemplate(N)}>{M.label}</button>)}</div>
+              </div>
+              <div className="set-sec">
+                <div className="set-h">Tabs</div>
+                {ALL_TABS.map((N) => <label key={N} className="set-row"><input type="checkbox" checked={draft.tabs[N] !== false} onChange={(M) => update((L) => { L.tabs[N] = M.target.checked; L.template = "custom"; })} /><span>{N}</span></label>)}
+              </div>
+              <div className="set-sec">
+                <div className="set-h">Widgets</div>
+                {ALL_TABS.filter((N) => draft.tabs[N] !== false).map((N) => (
+                  <div key={N} className="set-group">
+                    <div className="set-sub">{N}</div>
+                    {WIDGET_REGISTRY.filter((M) => M.tab === N).map((M) => <label key={M.id} className="set-row"><input type="checkbox" checked={draft.widgets[M.id] !== false} onChange={(L) => update((I) => { I.widgets[M.id] = L.target.checked; I.template = "custom"; })} /><span>{M.label}</span></label>)}
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+          {sec === "Branding" && (
+            <div className="set-sec">
+              <div className="set-h">Branding</div>
+              <div className="cm-field">
+                <label>Company logo <span className="cm-hint">(theme colors are generated from it)</span></label>
+                <button className="btn ghost sm" onClick={() => fileRef.current.click()}>Upload logo → auto-generate theme</button>
+                <input ref={fileRef} type="file" accept="image/*" hidden onChange={onLogoFile} />
+                {draft.brand && draft.brand.logoColors && <div className="swatches" style={{ marginTop: 8 }}>{draft.brand.logoColors.map((N) => <span key={N} className="swatch" style={{ background: N, cursor: "default" }} />)}</div>}
+              </div>
+              <div className="cm-field">
+                <label>Company name <span className="cm-hint">(header, PDF title, export filenames)</span></label>
+                <input className="inp" placeholder="Weekly Performance Book" value={(draft.brand && draft.brand.name) || ""} onChange={(N) => update((M) => { M.brand = { ...(M.brand || {}), name: N.target.value }; })} />
+              </div>
+            </div>
+          )}
+          {sec === "Theme" && (
+            <div className="set-sec">
+              <div className="set-h">Theme colors</div>
+              <div className="set-hint">Leave a color empty to use the default. Changes preview live; nothing saves until you hit Save.</div>
+              <div className="theme-grid">{THEME_FIELDS.map(([N, M]) => <div key={N} className="theme-row"><input type="color" value={getColor(N) || "#233041"} onChange={(L) => setColor(N, L.target.value)} /><span className="theme-lbl">{M}</span>{getColor(N) && <button className="theme-clear" title="Reset to default" onClick={() => setColor(N, "")}>×</button>}</div>)}</div>
+              <button className="btn ghost sm" style={{ marginTop: 8 }} onClick={() => update((N) => { N.theme = {}; })}>Reset all colors to default</button>
+            </div>
+          )}
+          {sec === "Display" && (
+            <div className="set-sec">
+              <div className="set-h">Display</div>
+              <label className="set-row"><input type="checkbox" checked={dark} onChange={(N) => setDark(N.target.checked)} /><span>Dark mode (this device)</span></label>
+            </div>
+          )}
+          {sec === "Danger" && (
+            <div className="set-sec danger-zone">
+              <div className="set-h">Danger zone</div>
+              {weekCount > 1 && <button className={"btn ghost sm" + (confirmDel ? " danger" : "")} onClick={() => { if (confirmDel) { onDeleteWeek(); setConfirmDel(false); } else { setConfirmDel(true); setTimeout(() => setConfirmDel(false), 4000); } }}>{confirmDel ? "Confirm delete Week " + weekCount : "Delete latest week (W" + weekCount + ")"}</button>}
+              <button className={"btn ghost sm" + (confirmReset ? " danger" : "")} style={{ marginLeft: 8 }} onClick={() => { if (confirmReset) { onReset(); setConfirmReset(false); } else { setConfirmReset(true); setTimeout(() => setConfirmReset(false), 4000); } }}>{confirmReset ? "Confirm full reset" : "Reset all data"}</button>
+            </div>
+          )}
+        </div>
+        <div className="modal-foot"><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn primary" onClick={() => onSave(draft)}>Save settings</button></div>
+      </div>
+    </div>
+  );
+}
+
+function SetupWizard({ onCancel, onCreate }) {
+  const [recs, setRecs] = useState([]);
+  const [reps, setReps] = useState([]);
+  const [recName, setRecName] = useState("");
+  const [repName, setRepName] = useState("");
+  const [goals, setGoals] = useState({ bill: "", pay: "", margin: "", headcount: "" });
+  const addRec = () => { const p = recName.trim(); if (p && !recs.includes(p)) setRecs([...recs, p]); setRecName(""); };
+  const addRep = () => { const p = repName.trim(); if (p && !reps.includes(p)) setReps([...reps, p]); setRepName(""); };
+  return (
+    <div className="modal-back" onClick={onCancel}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head"><div className="modal-title">Set up your team</div><button className="x" onClick={onCancel} aria-label="Close">×</button></div>
+        <div className="modal-body">
+          <p className="setup-intro">Add your recruiters and salespeople. You can add, remove, or rename people anytime later from the Add Data screen.</p>
+          <div className="msec">Recruiters</div>
+          <div className="chip-row">{recs.length === 0 && <span className="chip-empty">None yet</span>}{recs.map((p) => <span key={p} className="chip">{p}<button type="button" onClick={() => setRecs(recs.filter((x) => x !== p))} aria-label={"Remove " + p}>×</button></span>)}</div>
+          <div className="create-form"><input className="inp" placeholder="Recruiter name" value={recName} onChange={(e) => setRecName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") addRec(); }} /><button className="btn sm" onClick={addRec}>Add</button></div>
+          <div className="msec" style={{ marginTop: 14 }}>Salespeople</div>
+          <div className="chip-row">{reps.length === 0 && <span className="chip-empty">None yet</span>}{reps.map((p) => <span key={p} className="chip">{p}<button type="button" onClick={() => setReps(reps.filter((x) => x !== p))} aria-label={"Remove " + p}>×</button></span>)}</div>
+          <div className="create-form"><input className="inp" placeholder="Salesperson name" value={repName} onChange={(e) => setRepName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") addRep(); }} /><button className="btn sm" onClick={addRep}>Add</button></div>
+          <div className="msec" style={{ marginTop: 14 }}>Weekly goals <span className="setup-opt">(optional — you can set these later)</span></div>
+          <div className="nf-grid">
+            <NumField label="Bill $" value={goals.bill} onChange={(p) => setGoals({ ...goals, bill: p })} />
+            <NumField label="Pay $" value={goals.pay} onChange={(p) => setGoals({ ...goals, pay: p })} />
+            <NumField label="Margin %" value={goals.margin} onChange={(p) => setGoals({ ...goals, margin: p })} />
+            <NumField label="Headcount" value={goals.headcount} onChange={(p) => setGoals({ ...goals, headcount: p })} />
+          </div>
+        </div>
+        <div className="modal-foot"><button className="btn ghost" onClick={onCancel}>Cancel</button><button className="btn primary" onClick={() => onCreate({ recruiters: recs, salespeople: reps, goals })}>Create dashboard</button></div>
+      </div>
+    </div>
+  );
+}
+
+function AddWeekModal({ d, onClose, onSave, onAddRep, onRemoveRep, onAddRecruiter, onRemoveRecruiter }) {
+  const dirty = useRef(false);
+  const close = () => { if (!dirty.current || window.confirm("You have unsaved entries for this week. Discard them?")) onClose(); };
+  useEscClose(close);
+  const nextWeek = (d.currentWeek || d.teamGoals.totalGM.length) + 1;
+  const blank = (fields) => Object.fromEntries(fields.map((f) => [f, ""]));
+  const [weekDate, setWeekDate] = useState("");
+  const [dateInput, setDateInput] = useState("");
+  const [tgForm, setTgForm] = useState(blank(TG_FIELDS));
+  const [openOrders, setOpenOrders] = useState("");
+  const [salesForm, setSalesForm] = useState(blank(SALES_FIELDS));
+  const [recForm, setRecForm] = useState({});
+  const [repForm, setRepForm] = useState({});
+  const recNames = (d.recruitment.recruiters || []).map((r) => r.name);
+  const repNames = Object.keys(d.sales.repTotals || {});
+  const [section, setSection] = useState("tg");
+  const [addName, setAddName] = useState("");
+  const [confirmRemove, setConfirmRemove] = useState(null);
+  const [err, setErr] = useState("");
+  const touch = () => { dirty.current = true; };
+  const setTg = (k, v) => { touch(); setTgForm((p) => ({ ...p, [k]: v })); };
+  const setSales = (k, v) => { touch(); setSalesForm((p) => ({ ...p, [k]: v })); };
+  const setRec = (name, k, v) => { touch(); setRecForm((p) => ({ ...p, [name]: { ...(p[name] || blank(REC_FIELDS)), [k]: v } })); };
+  const setRep = (name, k, v) => { touch(); setRepForm((p) => ({ ...p, [name]: { ...(p[name] || blank(REP_ENTRY_FIELDS)), [k]: v } })); };
+  const pickSection = (v) => { setSection(v); setConfirmRemove(null); setAddName(""); };
+  const priorIdx = nextWeek - 2, canPrefill = priorIdx >= 0;
+  const prefill = () => {
+    if (!canPrefill) return;
+    const at = (arr) => { const v = (arr || [])[priorIdx]; return v == null || v === 0 ? "" : String(v); };
+    setTgForm(Object.fromEntries(TG_FIELDS.map((f) => [f, at(d.teamGoals[f])])));
+    setOpenOrders(at(d.recruitment.total && d.recruitment.total.openOrders));
+    setSalesForm(Object.fromEntries(SALES_FIELDS.map((f) => [f, at(d.sales[f])])));
+    setRecForm(Object.fromEntries((d.recruitment.recruiters || []).map((r) => [r.name, Object.fromEntries(REC_FIELDS.map((f) => [f, at(r[f])]))])));
+    const led = (d._weekLedger || []).find((x) => x.week === nextWeek - 1);
+    if (led && led.reps) setRepForm(Object.fromEntries(Object.entries(led.reps).map(([name, vals]) => [name, Object.fromEntries(REP_ENTRY_FIELDS.map((f) => [f, vals[f] == null || +vals[f] === 0 ? "" : String(vals[f])]))])));
+  };
+  const addPerson = (kind) => {
+    const name = addName.trim();
+    if (!name) return;
+    if (kind === "rep") { if (repNames.includes(name)) return; onAddRep(name); setRepForm((p) => ({ ...p, [name]: blank(REP_ENTRY_FIELDS) })); setSection("rep::" + name); }
+    else { if (recNames.includes(name)) return; onAddRecruiter(name); setRecForm((p) => ({ ...p, [name]: blank(REC_FIELDS) })); setSection("rec::" + name); }
+    setAddName("");
+  };
+  const removePerson = (kind, name) => {
+    const key = kind + "::" + name;
+    if (confirmRemove === key) {
+      if (kind === "rep") { onRemoveRep(name); const rest = repNames.filter((x) => x !== name); setSection(rest[0] ? "rep::" + rest[0] : "tg"); }
+      else { onRemoveRecruiter(name); const rest = recNames.filter((x) => x !== name); setSection(rest[0] ? "rec::" + rest[0] : "tg"); }
+      setConfirmRemove(null);
+    } else setConfirmRemove(key);
+  };
+  const collectReps = () => Object.fromEntries(repNames.map((n) => [n, repForm[n] || blank(REP_ENTRY_FIELDS)]));
+  const collectRecs = () => Object.fromEntries(recNames.map((n) => [n, recForm[n] || blank(REC_FIELDS)]));
+  const recSel = section.startsWith("rec::") && section !== "rec::__add__" ? section.slice(5) : null;
+  const repSel = section.startsWith("rep::") && section !== "rep::__add__" ? section.slice(5) : null;
+  return (
+    <div className="modal-back" onClick={close}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <div className="modal-title">Add data — Week {nextWeek}</div>
+          {canPrefill && <button className="btn ghost sm prefill-btn" onClick={prefill} title="Copy last week's numbers into the form so you only change what moved">⤺ Prefill from last week</button>}
+          <button className="x" onClick={close} aria-label="Close">×</button>
+        </div>
+        <div className="modal-body">
+          <label className="nf wide"><span>Week ending (date)</span><input type="date" value={dateInput} onChange={(e) => { const v = e.target.value; setDateInput(v); if (!v) { setWeekDate(""); return; } const parts = v.split("-"); setWeekDate(["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][+parts[1] - 1] + " " + parts[2]); }} /></label>
+          <div className="msec">Section</div>
+          <div className="rep-manage">
+            <select className="rep-select" value={section} onChange={(e) => pickSection(e.target.value)}>
+              <optgroup label="Team"><option value="tg">Team goals</option><option value="salestot">Sales totals</option></optgroup>
+              <optgroup label="Recruiters">{recNames.map((w) => <option key={w} value={"rec::" + w}>{w}</option>)}<option value="rec::__add__">＋ Add recruiter…</option></optgroup>
+              <optgroup label="Sales reps">{repNames.map((w) => <option key={w} value={"rep::" + w}>{w}</option>)}<option value="rep::__add__">＋ Add sales rep…</option></optgroup>
+            </select>
+          </div>
+          {section === "tg" && <div className="nf-grid">{TG_FIELDS.map((w) => <NumField key={w} label={TG_ENTRY_LABELS[w]} value={tgForm[w]} onChange={(v) => setTg(w, v)} />)}<NumField label="Open Orders (total)" value={openOrders} onChange={setOpenOrders} /></div>}
+          {section === "salestot" && <div className="nf-grid">{SALES_FIELDS.map((w) => <NumField key={w} label={SALES_ENTRY_LABELS[w]} value={salesForm[w]} onChange={(v) => setSales(w, v)} />)}</div>}
+          {recSel && <div className="nf-grid rep-fields">{REC_FIELDS.map((w) => <NumField key={w} label={REC_ENTRY_LABELS[w]} value={(recForm[recSel] || {})[w] || ""} onChange={(v) => setRec(recSel, w, v)} />)}</div>}
+          {repSel && <div className="nf-grid rep-fields">{REP_ENTRY_FIELDS.map((w) => <NumField key={w} label={REP_FIELD_LABELS[w]} value={(repForm[repSel] || {})[w] || ""} onChange={(v) => setRep(repSel, w, v)} />)}</div>}
+          {(section === "rep::__add__" || section === "rec::__add__") && <div className="rep-add"><input placeholder={section === "rep::__add__" ? "New sales rep name" : "New recruiter name"} value={addName} onChange={(e) => setAddName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addPerson(section === "rep::__add__" ? "rep" : "rec"); } }} /><button type="button" className="btn primary xs" onClick={() => addPerson(section === "rep::__add__" ? "rep" : "rec")}>Add</button></div>}
+          <div className="mnote"><b>To add or remove a person:</b> pick them (or "Add…") from the dropdown — those roster changes save instantly, so you can just close this window. <b>To log a new week:</b> fill in the numbers, then Save. (Saving with everything blank is blocked so you don't create an empty week.)</div>
+          {err && <div className="mnote merr">{err}</div>}
+          {(() => {
+            const num = (x) => +x || 0;
+            const warns = [];
+            if (num(salesForm.contractsSigned) > num(salesForm.contractsSent)) warns.push("Contracts signed exceeds contracts sent.");
+            Object.entries(repForm).forEach(([name, v]) => { if (num(v.signed) > num(v.contracts)) warns.push(name + ": signed exceeds contracts sent."); });
+            if (num(tgForm.weeklyFill) > 1) warns.push("Weekly fill rate is over 100% — enter it as a decimal (0.85 = 85%).");
+            if ([...Object.values(tgForm), ...Object.values(salesForm)].some((x) => num(x) < 0) || Object.values(repForm).some((v) => Object.values(v).some((x) => num(x) < 0)) || Object.values(recForm).some((v) => Object.values(v).some((x) => num(x) < 0))) warns.push("A negative number was entered.");
+            return warns.length ? <div className="entry-warn"><b>Double-check:</b><ul>{warns.map((w, i) => <li key={i}>{w}</li>)}</ul></div> : null;
+          })()}
+        </div>
+        <div className="modal-foot">
+          <button className="btn ghost" onClick={close}>Close</button>
+          <button className="btn primary" onClick={() => {
+            const any = (o) => Object.values(o || {}).some((x) => (+x || 0) !== 0);
+            const reps = collectReps(), recs = collectRecs();
+            if (!(any(tgForm) || (+openOrders || 0) !== 0 || any(salesForm) || Object.values(reps).some(any) || Object.values(recs).some(any))) { setErr("Nothing to save yet — enter at least one number for Week " + nextWeek + ". (Adding or removing people already saved on its own.)"); return; }
+            onSave({ weekDate, tg: tgForm, sales: salesForm, openOrders, recruiters: recs, reps });
+          }}>Save Week {nextWeek}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 /* ===== CHECKPOINT 2 stub App (App shell reconstructed next) ===== */
 export default function App() {
