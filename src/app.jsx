@@ -9,9 +9,11 @@ import autoTable from "jspdf-autotable";
 import { EMPTY } from "./EMPTY_DATA.js";
 
 /* ===========================================================================
- *  app.jsx — reconstructed from the compiled build (see RECONSTRUCTION.md).
- *  CHECKPOINT 1: logic layer (config, engine, week engine, Excel export/parse).
- *  Components + the App shell are added in later checkpoints.
+ *  app.jsx — the Weekly Performance Book dashboard.
+ *  Reconstructed as clean source from the compiled build and validated by
+ *  build + round-trip + jsdom-render tests (see tests/ and RECONSTRUCTION.md).
+ *  Layout: config/theme engine · multi-team engine · week engine ·
+ *  Excel export + parser · UI primitives/charts · tab views · modals · App.
  * ========================================================================== */
 
 const STORAGE_KEY = "wpb_data_v2";

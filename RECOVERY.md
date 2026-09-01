@@ -1,11 +1,15 @@
 # Recovery status
 
 The working project folder was accidentally deleted. This repo was reassembled
-from the live deployment plus the change history. Status of each piece:
+from the live deployment plus the change history — and the whole project now
+**builds from clean source** again (`npm install && npm run build`). Status:
 
 ## Recovered / safe
-- **`dist/index.html`** — the exact working live build (self-contained: React app
-  + inlined CSS + Supabase config). This is the deployable and the source of truth.
+- **`src/app.jsx`** — the full dashboard, reconstructed as clean source and validated
+  (`npm test`: logic round-trip + jsdom render, 0 React errors). See `RECONSTRUCTION.md`.
+- **`dist/index.html`** — the deployable, now built from `src/` via `node build.mjs`
+  (self-contained: React app + inlined CSS + Supabase config). The exact original
+  compiled build is also preserved in `recovered/bundle.js`.
 - **`dist/WPB_OFFLINE_DEMO.html`** — the same build with Supabase disabled, so it
   runs locally with no DB (onboarding/local-storage mode).
 - **`src/styles.css`** — recovered verbatim from the live build (unminified, 768 lines,
@@ -13,16 +17,12 @@ from the live deployment plus the change history. Status of each piece:
 - **`supabase/REBUILD_DATABASE.sql`** — full schema + roles + RLS + first-login trigger
   + invite-eligibility function. Recreates the database from scratch.
 
-## Not cleanly recovered
-- **`src/app.jsx`** — the ~167 KB dashboard file (Excel parser, charts, tab
-  components, PDF export, settings/theme engine). It survives only *compiled* inside
-  `dist/index.html`. It cannot be reproduced as clean, hand-written source without
-  reconstructing it, so **new feature work on the dashboard requires rebuilding this
-  file first**. CSS-only/visual changes can still be made by editing `src/styles.css`
-  and re-inlining it into the built HTML.
+## Fidelity note
+- `src/app.jsx` was reconstructed from the compiled bundle. The export-format Excel
+  round-trip is test-covered; the raw-agency-workbook import path was reconstructed by
+  inspection (no real fixtures survived) — spot-check a real import before relying on it.
 
 ## To point the app at a different / new Supabase project
-The URL + anon key are baked into `dist/index.html`. Find `.supabase.co` in the
-file and replace the project ref + the `sb_publishable_...` key with the new ones,
-then redeploy. (Or, once `app.jsx` is reconstructed, edit `src/supabase.js` and
-rebuild with `node build.mjs`.)
+Edit `src/supabase.js` (project URL + `sb_publishable_...` key) and rebuild with
+`node build.mjs`. (The values are also baked into `dist/index.html` if you need to
+patch the built file directly — find `.supabase.co`.)

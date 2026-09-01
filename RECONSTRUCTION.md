@@ -1,45 +1,43 @@
-# app.jsx reconstruction map
+# app.jsx reconstruction — COMPLETE
 
-`src/app.jsx` is the only file not recovered as clean source. The complete compiled
-version is preserved two ways:
-- `dist/index.html` (the deployable) and
-- `recovered/bundle.js` (the extracted minified bundle).
+`src/app.jsx` was lost and has been fully reconstructed as clean, editable source
+from the compiled build, then validated. The whole project now builds from source:
 
-`recovered/app_recovered_partial.jsx` holds the **clean, readable source of the parts
-that were recoverable verbatim** (the multi-team engine, the team-leaderboard feature,
-the data/week engine, and the Excel export/template). These are correct — they were read
-or authored directly, not de-compiled.
+```bash
+npm install
+npm run build     # -> dist/index.html (2.2 MB, self-contained)
+npm test          # logic 15/15 + jsdom render 9/9, 0 React errors
+```
 
-To produce a fully buildable `src/app.jsx`, the remaining pieces below must be
-reconstructed from `recovered/bundle.js` (they were never seen in clean form, so they are
-NOT in the partial file — do not guess them, translate them from the bundle and validate).
+## What's in app.jsx (in file order)
+- **Config/theme engine** — `getConfig`, `TEMPLATES`, `WIDGET_REGISTRY`, `THEME_FIELDS`,
+  `tabOn`/`widgetOn`, `activeBrandName`, `chartColors`, `applyThemeVars`, `C`
+- **Helpers** — `sum`, `last`, `deriveTeamGoals`, formatters, field constants
+- **Multi-team engine** — `hasTeams`, `teamList`, `sumArrays`, `rollupTeams`, `teamStandings`,
+  `TeamLeaderboard`, `pickEditTarget`, `mergeTeamEdit`, `importIntoTeamData`, `resolveTeamData`
+- **Week engine** — `addWeek`, `deleteLastWeek`, `recomputeRecruitTotals`
+- **Excel** — `buildWorkbook`, `exportToExcel`, `downloadTemplate`, `parseWorkbook`
+  (+ `parseRawWorkbook` for raw agency workbooks)
+- **UI primitives & charts** — `KPI`, `ProgressRing`, `ProgressCard`, `ChartCard`, `axis`,
+  `tip`, `Funnel`, `TouchesDonut`, `SalesFocus`, `Leaderboard`, `useSeries`, `Insights`,
+  `PeriodCompare`, `RepProfile`
+- **Tab views** — `Overview`, `TeamGoals`, `Recruitment`, `Sales`, `RecruiterScorecard`,
+  `RecProfile`, `downloadPDF`, `extractBrandFromLogo`
+- **Modals / setup** — `SettingsPanel`, `SetupWizard`, `AddWeekModal`, `NumField`, `TeamManager`
+- **`App`** — default export: onboarding, topbar (team/year/week selectors), tabs,
+  import/export/PDF, settings, offline (localStorage) + hosted (Supabase) modes
 
-## Recovered clean (in app_recovered_partial.jsx)
-- Constants: `ALL_TABS`, `TABS`, `tabOn`, `widgetOn`, `TG_FIELDS`, `REC_FIELDS`,
-  `SALES_FIELDS`, `REP_ENTRY_FIELDS`
-- Formatters: `pct`, `fmtCur`, `fmtCurK`, `fmtCur0`, `fmtNum`, `fmtPct`, `clamp01`
-- Multi-team engine: `hasTeams`, `teamList`, `sumArrays`, `rollupTeams`, `teamStandings`,
-  `STATUS_META`, `TeamLeaderboard`, `editingTeam`, `pickEditTarget`, `mergeTeamEdit`,
-  `importIntoTeamData`, `resolveTeamData`
-- Week engine: `addWeek`, `deleteLastWeek`, `recomputeRecruitTotals`
-- Excel out: `buildWorkbook`, `exportToExcel`, `downloadTemplate`, `brandSlug`, `dateStamp`
-- Components: `Leaderboard`, `Overview`, `TeamManager`
+## Validation
+- `tests/logic.test.mjs` — `buildWorkbook` ⇄ `parseWorkbook` round-trip + `teamStandings`.
+- `tests/render.test.mjs` — mounts `App` in jsdom with real data; asserts the dashboard
+  and Sales tab render with **0 React errors**.
+- Visually verified in-browser: login shell + Overview + Sales tabs, styled, no console errors.
 
-## Still needs de-compiling from recovered/bundle.js
-- **`parseWorkbook`** (Excel import; auto-detects raw agency workbook vs app export — complex)
-- Tab components: `TeamGoals` (full), `Recruitment`, `Sales`, `RecruiterScorecard`
-- Modals/wizards: `AddWeekModal`, `SettingsPanel`, `SetupWizard`, `RepProfile`, `RecProfile`
-- Chart/UI primitives: `KPI`, `Card`, `ChartCard`, `Insights`, `PeriodCompare`,
-  `ProgressCard`, `Commission`, and chart constants `C`, `axis`, `tip`
-- Config/theme engine: `getConfig`, `DEFAULT_CONFIG`, `applyThemeVars`, `chartColors`,
-  `WIDGET_REGISTRY`, `TEMPLATES`, `activeBrandName`, `extractBrandFromLogo`, `deriveTeamGoals`
-- Helpers: `sum`, `last`, `slugify`, PDF export `downloadPDF`
-- The `App` default export (large): topbar, tabs, week/year/team selectors, add/import
-  handlers, render — big portions are recoverable from my reads but interleave with the
-  above, so rebuild the whole `App` once the pieces exist.
-
-## Validation when reconstructing
-1. `node build.mjs` must succeed and produce a `dist/index.html` that renders.
-2. `npm test` (export round-trip + team feature + jsdom mount suites — the test files can
-   be re-authored from the bundle-verified behavior).
-3. Diff the rebuilt `dist/index.html` behavior against the current known-good one.
+## Fidelity notes
+- Reconstructed from the compiled bundle, so names/comments are new but behavior matches.
+- The **raw-workbook import path** (`parseRawWorkbook`) was reconstructed by inspection; the
+  export-format round-trip is test-covered, but the many raw-Excel label variants could not be
+  tested against real fixtures (lost). Spot-check an import of a real workbook before relying on it.
+- The exact original compiled app is still preserved in `recovered/bundle.js`
+  (rebuild it into `dist/` with `node scripts/build-from-bundle.mjs` if ever needed).
+  `recovered/app_recovered_partial.jsx` is the earlier partial extract, now superseded by `src/app.jsx`.

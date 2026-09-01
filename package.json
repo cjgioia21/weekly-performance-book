@@ -15,6 +15,6 @@
   },
   "scripts": {
     "build": "node build.mjs",
-    "test": "node tests/prebuild.mjs && node tests/export_roundtrip.mjs && node tests/feature_team.mjs && node tests/ui_mount.mjs"
+    "test": "node tests/logic.test.mjs && node tests/render.test.mjs"
   }
 }
