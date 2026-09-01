@@ -15,6 +15,6 @@
   },
   "scripts": {
     "build": "node build.mjs",
-    "test": "node tests/logic.test.mjs && node tests/render.test.mjs"
+    "test": "node tests/logic.test.mjs && node tests/raw-import.test.mjs && node tests/render.test.mjs"
   }
 }
