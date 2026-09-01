@@ -1,3 +1,6 @@
 node_modules/
 *.log
 .env
+build-check/
+dist/bundle.tmp.js
+recovered/bundle.beautified.js
