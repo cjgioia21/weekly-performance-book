@@ -1659,7 +1659,379 @@ function AddWeekModal({ d, onClose, onSave, onAddRep, onRemoveRep, onAddRecruite
   );
 }
 
-/* ===== CHECKPOINT 2 stub App (App shell reconstructed next) ===== */
-export default function App() {
-  return <div className="welcome"><h1>Reconstruction — checkpoint 2 (UI primitives)</h1><p>Charts, KPIs, leaderboard, progress rings, period comparison reconstructed.</p></div>;
+/* ================================ APP ================================ */
+const blankRecruiter = (name, n = 0) => ({ name, gm: Array(n).fill(0), peoplePaid: Array(n).fill(0), starts: Array(n).fill(0), ends: Array(n).fill(0), interviews: Array(n).fill(0), registered: Array(n).fill(0), submittals: Array(n).fill(0), clientInterviews: Array(n).fill(0) });
+const blankRep = () => ({ calls: 0, prospectDMCalls: 0, prospectMeetings: 0, clientMeetings: 0, contracts: 0, signed: 0, firstOrder: 0, newAccounts: 0, gm: 0, meetings: 0, prospectTouches: 0, clientTouches: 0 });
+
+export default function App({ session = null, initialData = undefined, onPersist = null, canEdit = true, agencyName = "", editableTeam = null }) {
+  const isLead = !!editableTeam;
+  const canEditNormal = canEdit && !isLead;
+  const [data, setData] = useState(null);
+  const [tab, setTab] = useState(() => { try { const t = localStorage.getItem("wpb_default_tab"); return ALL_TABS.includes(t) ? t : "Overview"; } catch { return "Overview"; } });
+  const [wkView, setWkView] = useState(null);
+  const [archYear, setArchYear] = useState(null);
+  const [teamSel, setTeamSel] = useState(editableTeam || "__all__");
+  const yearRef = useRef(null);
+  const [addOpen, setAddOpen] = useState(false);
+  const [step, setStep] = useState(1);
+  const [brand, setBrand] = useState({ name: "", logo: null, logoColors: null, primary: null, secondary: null });
+  const logoRef = useRef(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [cfgPreview, setCfgPreview] = useState(null);
+  const [wizardOpen, setWizardOpen] = useState(false);
+  const [dark, setDark] = useState(() => { try { return localStorage.getItem(THEME_KEY) === "dark"; } catch { return false; } });
+  const [err, setErr] = useState("");
+  const importRef = useRef(null);
+  const teamCreateRef = useRef(null);
+  const teamTargetRef = useRef(null);
+  const [savedAt, setSavedAt] = useState(0);
+  const [savedFlash, setSavedFlash] = useState(false);
+  const [teamMgrOpen, setTeamMgrOpen] = useState(false);
+  const [pendingTeam, setPendingTeam] = useState("");
+
+  useEffect(() => { if (agencyName) setBrand((b) => (b.name ? b : { ...b, name: agencyName })); }, [agencyName]);
+  const brandConfig = () => (brand.name || brand.logo ? { template: "custom", tabs: {}, widgets: {}, theme: { ...(brand.primary ? { primary: brand.primary } : {}), ...(brand.secondary ? { secondary: brand.secondary } : {}) }, brand: { name: (brand.name || "").trim(), ...(brand.logo ? { logo: brand.logo, logoColors: brand.logoColors } : {}) } } : null);
+
+  useEffect(() => { if (!session) try { const s = localStorage.getItem(STORAGE_KEY); if (s) setData(JSON.parse(s)); } catch {} }, []);
+  useEffect(() => { if (session && initialData !== undefined) setData(initialData); }, [session, initialData]);
+  useEffect(() => { document.documentElement.classList.toggle("wpb-dark", dark); try { localStorage.setItem(THEME_KEY, dark ? "dark" : "light"); } catch {} }, [dark]);
+
+  const re = cfgPreview || getConfig(data);
+  Object.assign(C, chartColors(re));
+  useEffect(() => { applyThemeVars(re); }, [JSON.stringify(re.theme), JSON.stringify(re.brand)]);
+  useEffect(() => { try { document.title = activeBrandName({ ...data, config: cfgPreview || (data && data.config) }); } catch {} }, [re.brand && re.brand.name]);
+
+  const persist = (nd) => { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(nd)); } catch {} if (onPersist) onPersist(nd); setSavedAt(Date.now()); };
+  useEffect(() => { if (!savedAt) return; setSavedFlash(true); const t = setTimeout(() => setSavedFlash(false), 2500); return () => clearTimeout(t); }, [savedAt]);
+
+  const createFromSetup = ({ recruiters = [], salespeople = [], goals = {} }) => {
+    const nd = JSON.parse(JSON.stringify(EMPTY));
+    nd.recruitment.recruiters = recruiters.map((name) => blankRecruiter(name, 0));
+    nd.sales.repTotals = {};
+    salespeople.forEach((name) => { nd.sales.repTotals[name] = blankRep(); });
+    nd.teamGoals.goals = { bill: goals.bill != null && goals.bill !== "" ? +goals.bill : null, pay: goals.pay != null && goals.pay !== "" ? +goals.pay : null, margin: goals.margin != null && goals.margin !== "" ? +goals.margin : null, headcount: goals.headcount != null && goals.headcount !== "" ? +goals.headcount : null };
+    nd.currentWeek = 0; nd.weekEnding = "";
+    const bc = brandConfig(); if (bc) nd.config = bc;
+    setData(nd); persist(nd); setWizardOpen(false); setWkView(null);
+  };
+
+  const editTarget = pickEditTarget(data, teamSel);
+  const commitEdit = (ndTarget) => { const merged = mergeTeamEdit(data, teamSel, ndTarget); setData(merged); persist(merged); };
+
+  const slugify2 = (s) => (s || "").toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "team-" + Date.now();
+
+  const onImport = async (e) => {
+    const file = e.target.files && e.target.files[0], target = teamTargetRef.current;
+    teamTargetRef.current = null;
+    if (!file) { e.target.value = ""; return; }
+    setErr("");
+    try {
+      const buf = await file.arrayBuffer();
+      const parsed = parseWorkbook(buf);
+      if (!parsed.currentWeek) throw new Error("No weekly data found — fill in at least one week before importing");
+      if (data && hasTeams(data)) {
+        const tid = target && data.teams[target] ? target : teamSel !== "__all__" ? teamSel : null;
+        if (!tid || !data.teams[tid]) { setErr("Pick a team first (top-left), then Import replaces that team's data. On “All teams” there's no single team to import into."); e.target.value = ""; return; }
+        const nd = importIntoTeamData(data, tid, parsed, file.name);
+        setData(nd); persist(nd); setTeamSel(tid); setWkView(null); e.target.value = ""; return;
+      }
+      if (!data) { const bc = brandConfig(); if (bc) parsed.config = bc; }
+      if (data) {
+        const gNew = parsed.teamGoals.goals || {}, gOld = (data.teamGoals && data.teamGoals.goals) || {};
+        if (!Object.values(gNew).some((x) => x)) parsed.teamGoals.goals = gOld;
+        if (!parsed.config && data.config) parsed.config = data.config;
+        if (!parsed.brand && data.brand) parsed.brand = data.brand;
+        if (!parsed.commission && data.commission) parsed.commission = data.commission;
+      }
+      parsed._importMeta = { file: file.name, at: new Date().toISOString() };
+      setData(parsed); persist(parsed); setWkView(null); e.target.value = "";
+    } catch (ex) { setErr("Couldn't read that file: " + ex.message); e.target.value = ""; }
+  };
+
+  const onAddYear = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    setErr("");
+    try {
+      const buf = await file.arrayBuffer();
+      const parsed = parseWorkbook(buf);
+      if (!parsed.currentWeek) throw new Error("No weekly data found in that file");
+      const yr = String(parsed._year || "");
+      if (!yr) throw new Error("Couldn't determine the file's year");
+      delete parsed.archive; delete parsed.config;
+      if (!data) { const bc = brandConfig(); if (bc) parsed.config = bc; parsed._importMeta = { file: file.name, at: new Date().toISOString() }; setData(parsed); persist(parsed); setArchYear(null); setWkView(null); e.target.value = ""; return; }
+      if (yr === String(year)) throw new Error("That year (" + yr + ") is already loaded as the current year. Use Import to replace it.");
+      delete parsed.brand;
+      if (+yr > +year) {
+        const cur = JSON.parse(JSON.stringify(data)); const curYr = String(year); const arc = cur.archive || {}; delete cur.archive;
+        const nd = { ...parsed, config: data.config, brand: data.brand, _importMeta: { file: file.name, at: new Date().toISOString() }, archive: { ...arc, [curYr]: cur } };
+        setData(nd); persist(nd); setArchYear(null); setWkView(null);
+      } else { const nd = { ...data, archive: { ...archive, [yr]: parsed } }; setData(nd); persist(nd); setArchYear(yr); setWkView(null); }
+    } catch (ex) { setErr("Couldn't add that year: " + ex.message); }
+    e.target.value = "";
+  };
+
+  const clearAll = () => { setData(null); setWkView(null); try { localStorage.removeItem(STORAGE_KEY); } catch {} };
+
+  const importIntoTeam = (tid) => { if (data && hasTeams(data) && data.teams[tid]) { teamTargetRef.current = tid; if (importRef.current) importRef.current.click(); } };
+  const splitIntoTeams = (name) => {
+    if (!data || hasTeams(data)) return;
+    const tid = slugify2(name || "Team 1");
+    const team = { name: (name || "Team 1").trim(), teamGoals: data.teamGoals, recruitment: data.recruitment, sales: data.sales, currentWeek: data.currentWeek, weekEnding: data.weekEnding, _year: data._year, _importMeta: data._importMeta };
+    const nd = { teams: { [tid]: team }, config: data.config, brand: data.brand, archive: data.archive, _year: data._year };
+    setData(nd); persist(nd); setTeamSel(tid); setWkView(null);
+  };
+  const addTeam = (name) => {
+    if (!data) return;
+    const nm = (name || "").trim(); if (!nm) return;
+    const tid = slugify2(nm); const blank = JSON.parse(JSON.stringify(EMPTY));
+    const team = { name: nm, teamGoals: blank.teamGoals, recruitment: blank.recruitment, sales: blank.sales, currentWeek: 0, weekEnding: "", _year: data._year || new Date().getFullYear() };
+    if (hasTeams(data)) { const nd = { ...data, teams: { ...data.teams, [tid]: team } }; setData(nd); persist(nd); setTeamSel(tid); setWkView(null); }
+    else splitIntoTeams("Team 1");
+  };
+  const renameTeam = (tid, name) => { if (!hasTeams(data) || !data.teams[tid]) return; const nm = (name || "").trim(); if (!nm) return; const nd = { ...data, teams: { ...data.teams, [tid]: { ...data.teams[tid], name: nm } } }; setData(nd); persist(nd); };
+  const removeTeam = (tid) => {
+    if (!hasTeams(data) || !data.teams[tid]) return;
+    const teams = { ...data.teams }; delete teams[tid];
+    const ids = Object.keys(teams); let nd;
+    if (ids.length === 0) { setTeamMgrOpen(false); return; }
+    if (ids.length === 1) { const only = teams[ids[0]]; nd = { ...data, teamGoals: only.teamGoals, recruitment: only.recruitment, sales: only.sales, currentWeek: only.currentWeek, weekEnding: only.weekEnding }; delete nd.teams; setTeamSel("__all__"); }
+    else { nd = { ...data, teams }; if (teamSel === tid) setTeamSel("__all__"); }
+    setData(nd); persist(nd); setWkView(null);
+  };
+  const onTeamCreateImport = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file || !pendingTeam) { e.target.value = ""; return; }
+    setErr("");
+    try {
+      const parsed = parseWorkbook(await file.arrayBuffer());
+      if (!parsed.currentWeek) throw new Error("No weekly data found in that file");
+      const tid = slugify2(pendingTeam);
+      const team = { name: pendingTeam.trim(), teamGoals: parsed.teamGoals, recruitment: parsed.recruitment, sales: parsed.sales, currentWeek: parsed.currentWeek, weekEnding: parsed.weekEnding, _year: parsed._year, _importMeta: { file: file.name, at: new Date().toISOString() } };
+      let nd;
+      if (hasTeams(data)) nd = { ...data, teams: { ...data.teams, [tid]: team } };
+      else if (data) {
+        const firstId = slugify2(activeBrandName(data) || "Team 1");
+        const first = { name: "Team 1", teamGoals: data.teamGoals, recruitment: data.recruitment, sales: data.sales, currentWeek: data.currentWeek, weekEnding: data.weekEnding, _year: data._year };
+        nd = { teams: { [firstId === tid ? firstId + "-1" : firstId]: first, [tid]: team }, config: data.config, brand: data.brand, archive: data.archive, _year: data._year };
+      } else nd = { teams: { [tid]: team }, _year: parsed._year, config: { template: "custom", tabs: {}, widgets: {}, theme: {}, brand: {} } };
+      setData(nd); persist(nd); setTeamSel(tid); setWkView(null); setPendingTeam("");
+    } catch (ex) { setErr("Couldn't import that team: " + ex.message); }
+    e.target.value = "";
+  };
+
+  const teams = teamList(data);
+  const multi = hasTeams(data);
+  const viewBase = data ? (multi ? resolveTeamData(data, teamSel) : data) : null;
+  const year = (viewBase && viewBase._year) || new Date().getFullYear();
+  const archive = (viewBase && viewBase.archive) || {};
+  const years = Object.keys(archive).sort((a, b) => b.localeCompare(a));
+  const viewingArchive = !!(archYear && archYear !== String(year) && archive[archYear]);
+  const view = data
+    ? viewingArchive
+      ? { ...archive[archYear], config: data.config, brand: data.brand }
+      : (() => {
+          const prev = archive[String(year - 1)];
+          if (!prev || !prev.teamGoals) return viewBase;
+          let acc = 0; const cum = (prev.teamGoals.totalGM || []).map((v) => (acc += +v || 0));
+          return { ...viewBase, teamGoals: { ...viewBase.teamGoals, cum2025: (viewBase.teamGoals.totalGM || []).map((v, i) => +(cum[i] != null ? cum[i] : cum[cum.length - 1] || 0).toFixed(2)) } };
+        })()
+    : null;
+  const series = useSeries(view || EMPTY);
+  const standings = multi ? teamStandings(data) : [];
+
+  useEffect(() => {
+    const h = (e) => {
+      const tag = (e.target && e.target.tagName) || "";
+      if (/INPUT|TEXTAREA|SELECT/.test(tag) || e.metaKey || e.ctrlKey || e.altKey || addOpen || settingsOpen) return;
+      const shown = ALL_TABS.filter((t) => tabOn(re, t));
+      if (/^[1-4]$/.test(e.key) && shown[+e.key - 1]) setTab(shown[+e.key - 1]);
+      else if (e.key === "a" && data && !viewingArchive && !(multi && teamSel === "__all__") && (canEditNormal || (isLead && teamSel === editableTeam))) setAddOpen(true);
+      else if (e.key === "e" && data) exportToExcel(data);
+    };
+    window.addEventListener("keydown", h); return () => window.removeEventListener("keydown", h);
+  });
+
+  const addWeekEl = () => addOpen && (
+    <AddWeekModal
+      d={editTarget}
+      onClose={() => setAddOpen(false)}
+      onSave={(form) => { commitEdit(addWeek(editTarget, form)); setWkView(null); setAddOpen(false); }}
+      onAddRep={(name) => { const nd = JSON.parse(JSON.stringify(editTarget)); nd.sales.repTotals = nd.sales.repTotals || {}; if (!nd.sales.repTotals[name]) nd.sales.repTotals[name] = blankRep(); commitEdit(nd); }}
+      onRemoveRep={(name) => { const nd = JSON.parse(JSON.stringify(editTarget)); if (nd.sales.repTotals) delete nd.sales.repTotals[name]; commitEdit(nd); }}
+      onAddRecruiter={(name) => { const nd = JSON.parse(JSON.stringify(editTarget)); const n = nd.currentWeek || nd.teamGoals.totalGM.length; nd.recruitment.recruiters = nd.recruitment.recruiters || []; if (!nd.recruitment.recruiters.some((r) => r.name === name)) nd.recruitment.recruiters.push(blankRecruiter(name, n)); commitEdit(nd); }}
+      onRemoveRecruiter={(name) => { const nd = JSON.parse(JSON.stringify(editTarget)); nd.recruitment.recruiters = (nd.recruitment.recruiters || []).filter((r) => r.name !== name); commitEdit(nd); }}
+    />
+  );
+
+  // ---- no data yet ----
+  if (!data) return canEdit ? (
+    <div className="welcome onboard">
+      <div className="w-eyebrow">WELCOME{brand.name ? " · " + brand.name.toUpperCase() : ""}</div>
+      <div className="ob-steps"><span className={"ob-dot" + (step === 1 ? " on" : " done")}>1</span><span className="ob-line" /><span className={"ob-dot" + (step === 2 ? " on" : "")}>2</span></div>
+      {step === 1 && (
+        <>
+          <h1>Make it yours.</h1>
+          <p>Confirm your company name and add your logo — we'll build your color theme from it automatically. You can change all of this later in Settings.</p>
+          <div className="ob-card">
+            <div className="cm-field"><label>Company name</label><input className="inp" placeholder="Acme Staffing" value={brand.name} onChange={(e) => setBrand((b) => ({ ...b, name: e.target.value }))} /></div>
+            <div className="cm-field">
+              <label>Logo <span className="cm-hint">(optional — generates your theme colors)</span></label>
+              <div className="ob-logo-row">
+                {brand.logo ? <img className="ob-logo-preview" src={brand.logo} alt="logo" /> : <span className="brand-mark ob-mark">{(brand.name || "?").replace(/^The /i, "").split(/\s+/).map((w) => w[0]).filter(Boolean).slice(0, 2).join("").toUpperCase() || "?"}</span>}
+                <button className="btn ghost sm" onClick={() => logoRef.current.click()}>{brand.logo ? "Replace logo" : "Upload logo"}</button>
+                <input ref={logoRef} type="file" accept="image/*" hidden onChange={(e) => { const file = e.target.files && e.target.files[0]; if (file) { extractBrandFromLogo(file, (c) => setBrand((b) => ({ ...b, ...c }))); e.target.value = ""; } }} />
+              </div>
+              {brand.logoColors && brand.logoColors.length > 0 && <div className="ob-palette"><span className="cm-hint">Your theme:</span>{brand.logoColors.map((c) => <span key={c} className="swatch" style={{ background: c, cursor: "default" }} />)}</div>}
+            </div>
+          </div>
+          <div className="w-actions"><button className="btn primary" onClick={() => setStep(2)}>Continue</button><button className="btn ghost" onClick={() => { setBrand({ name: "", logo: null, logoColors: null, primary: null, secondary: null }); setStep(2); }}>Skip for now</button></div>
+        </>
+      )}
+      {step === 2 && (
+        <>
+          <h1>Bring in your numbers.</h1>
+          <p>Import your existing Weekly Stats workbook — we read it as-is — or set up your team from scratch and enter weeks manually.</p>
+          <div className="ob-choices">
+            <button className="ob-choice" onClick={() => importRef.current.click()}><div className="ob-choice-icon">⬆</div><div className="ob-choice-t">Import spreadsheet</div><div className="ob-choice-d">Your raw Weekly Stats workbook or a Performance Book export. Recruiters, reps, goals, and every week come in automatically.</div></button>
+            <button className="ob-choice" onClick={() => setWizardOpen(true)}><div className="ob-choice-icon">✎</div><div className="ob-choice-t">Set up manually</div><div className="ob-choice-d">Enter your recruiters, salespeople, and goals, then add numbers week by week.</div></button>
+          </div>
+          <div className="w-actions"><button className="btn ghost sm" onClick={() => setStep(1)}>← Back to branding</button></div>
+        </>
+      )}
+      {canEdit && <input ref={importRef} type="file" accept=".xlsx,.xlsm,.csv" hidden onChange={onImport} />}
+      {err && <div className="err">{err}</div>}
+      {wizardOpen && <SetupWizard onCancel={() => setWizardOpen(false)} onCreate={createFromSetup} />}
+    </div>
+  ) : (
+    <div className="welcome"><div className="w-eyebrow">WEEKLY PERFORMANCE BOOK</div><h1>Nothing here yet.</h1><p>Ask your company admin to set up the dashboard.</p></div>
+  );
+
+  // ---- team set up, but no weeks yet ----
+  if (!multi && !data.currentWeek) {
+    const recs = (data.recruitment && data.recruitment.recruiters || []).map((r) => r.name);
+    const reps = Object.keys(data.sales && data.sales.repTotals || {});
+    return (
+      <div className="welcome">
+        <div className="w-eyebrow">WEEKLY PERFORMANCE BOOK</div>
+        <h1>Your team is set up.</h1>
+        <p>Download the Excel template — it's pre-built with your team. Fill in your weekly numbers, import it back, and your dashboard comes to life. Prefer typing? You can also add weeks manually.</p>
+        <div className="setup-roster">
+          <div><b>Recruiters:</b> {recs.length ? recs.join(", ") : "none yet"}</div>
+          <div><b>Salespeople:</b> {reps.length ? reps.join(", ") : "none yet"}</div>
+        </div>
+        <div className="w-actions">
+          {canEdit ? (
+            <>
+              <button className="btn primary" onClick={() => downloadTemplate(data)} title="Excel template pre-built with your team — fill weeks in, then import it back">⬇ Download data template</button>
+              <button className="btn primary" onClick={() => importRef.current.click()}>⬆ Import spreadsheet</button>
+              <button className="btn ghost" onClick={() => setAddOpen(true)}>+ Add a week manually</button>
+            </>
+          ) : <div className="empty-note">No data yet. Ask your company admin to add this week's numbers.</div>}
+        </div>
+        {canEdit && <input ref={importRef} type="file" accept=".xlsx,.xlsm,.csv" hidden onChange={onImport} />}
+        {err && <div className="err">{err}</div>}
+        {addWeekEl()}
+      </div>
+    );
+  }
+
+  // ---- main dashboard ----
+  const totalWk = view.currentWeek;
+  const ytd = wkView === "ytd";
+  const curWk = ytd ? totalWk : Math.min(wkView || totalWk, totalWk);
+  const wkEnding = (view.teamGoals.weekDates || [])[curWk - 1] || view.weekEnding || "";
+  const rollup = multi && teamSel === "__all__";
+  const canAdd = canEdit && !viewingArchive && !rollup && (!isLead || teamSel === editableTeam);
+  const pickTeam = (id) => { setTeamSel(id); setWkView(null); };
+  const setWeek = (n) => setWkView(Math.max(1, Math.min(totalWk, n)));
+  const brandName = activeBrandName({ ...data, config: cfgPreview || data.config });
+  const logo = (re.brand && re.brand.logo) || LOGO;
+  const initials = brandName.replace(/^The /i, "").split(/\s+/).map((w) => w[0]).filter(Boolean).slice(0, 2).join("").toUpperCase();
+
+  return (
+    <div className="app">
+      <header className="topbar">
+        <div className="brand">
+          {logo ? <img className="brand-logo" src={logo} alt={brandName} /> : <span className="brand-mark">{initials || "W"}</span>}
+          <div>
+            <div className="brand-title">{brandName}</div>
+            <div className="brand-sub">
+              Viewing {ytd ? "YTD · Weeks 1–" + totalWk : "Week " + curWk + " of " + totalWk + (wkEnding ? " · ending " + wkEnding : "")}
+              {data._importMeta ? <span className="fresh-badge" title={"Imported " + data._importMeta.file}>{"⇩ " + (data._importMeta.file.length > 28 ? data._importMeta.file.slice(0, 26) + "…" : data._importMeta.file) + " · " + new Date(data._importMeta.at).toLocaleDateString("en-US", { month: "short", day: "numeric" })}</span> : null}
+              {viewingArchive ? " · " + archYear + " archive (read-only)" : ""}
+              {rollup ? <span className="rollup-banner">◉ All teams · company roll-up (read-only)</span> : null}
+              {multi && teamSel !== "__all__" ? <span className="rollup-banner">{"◉ " + ((data.teams[teamSel] && data.teams[teamSel].name) || teamSel)}</span> : null}
+              {savedFlash && <span className="saved-flash">✓ Saved</span>}
+            </div>
+          </div>
+        </div>
+        <div className="top-actions">
+          {multi && (
+            <div className="seg teamseg" title="Choose team">
+              <button className={"seg-btn" + (teamSel === "__all__" ? " on" : "")} onClick={() => { setTeamSel("__all__"); setWkView(null); }}>All teams</button>
+              {teams.map((t) => <button key={t.id} className={"seg-btn" + (teamSel === t.id ? " on" : "") + (isLead && t.id === editableTeam ? " yours" : "")} onClick={() => { setTeamSel(t.id); setWkView(null); }}>{t.name}</button>)}
+              {canEditNormal && <button className="seg-btn teamadd" title="Manage teams" onClick={() => setTeamMgrOpen(true)}>⚙</button>}
+            </div>
+          )}
+          {!multi && canEditNormal && data && data.currentWeek > 0 && <button className="btn ghost sm" title="Split this company into multiple teams / locations" onClick={() => setTeamMgrOpen(true)}>+ Teams</button>}
+          {(years.length > 0 || canEditNormal) && (
+            <div className="seg yearseg" title="Choose year">
+              <button className={"seg-btn" + (viewingArchive ? "" : " on")} onClick={() => { setArchYear(null); setWkView(null); }}>{String(year)}</button>
+              {years.map((y) => <button key={y} className={"seg-btn" + (viewingArchive && archYear === y ? " on" : "")} onClick={() => { setArchYear(y); setWkView(null); }}>{y}</button>)}
+              {canEditNormal && <button className="seg-btn yearadd" title="Import a previous year's workbook" onClick={() => yearRef.current.click()}>+</button>}
+            </div>
+          )}
+          <div className="weeksel" title="Choose which week to view">
+            <button className="wk-btn" onClick={() => setWeek(curWk - 1)} disabled={ytd || curWk <= 1} aria-label="Previous week">‹</button>
+            <select className="wk-select" value={ytd ? "ytd" : String(curWk)} onChange={(e) => (e.target.value === "ytd" ? setWkView("ytd") : setWeek(+e.target.value))}>
+              <option value="ytd">YTD · full year</option>
+              {Array.from({ length: totalWk }, (_, i) => i + 1).map((w) => { const wd = (view.teamGoals.weekDates || [])[w - 1]; return <option key={w} value={w}>Week {w}{wd ? " · " + wd : ""}</option>; })}
+            </select>
+            <button className="wk-btn" onClick={() => setWeek(curWk + 1)} disabled={ytd || curWk >= totalWk} aria-label="Next week">›</button>
+          </div>
+          <button className="btn primary sm" onClick={() => setAddOpen(true)} style={canAdd ? undefined : { display: "none" }}>+ Add Data</button>
+          <button className="btn ghost sm" onClick={() => exportToExcel(view)}>Export</button>
+          <button className="btn ghost sm no-print" onClick={() => downloadPDF(view, curWk, ytd)} title="Download a formatted PDF of this view">⬇ PDF</button>
+          {canEditNormal && <button className="btn ghost sm" onClick={() => importRef.current.click()} disabled={viewingArchive} title={viewingArchive ? "Switch back to the current year to import" : multi ? (teamSel === "__all__" ? "Pick a team first — Import replaces that team's data" : "Replaces " + ((data.teams[teamSel] && data.teams[teamSel].name) || "this team") + "'s data") : "Import a workbook (replaces the current data)"}>Import</button>}
+          {canEditNormal && <button className="btn ghost sm no-print" onClick={() => setSettingsOpen(true)}>⚙ Settings</button>}
+          {canEditNormal && <input ref={importRef} type="file" accept=".xlsx,.xlsm,.csv" hidden onChange={onImport} />}
+          {canEditNormal && <input ref={yearRef} type="file" accept=".xlsx,.xlsm,.csv" hidden onChange={onAddYear} />}
+          {canEditNormal && <input ref={teamCreateRef} type="file" accept=".xlsx,.xlsm,.csv" hidden onChange={onTeamCreateImport} />}
+        </div>
+      </header>
+      <nav className="tabs">
+        {ALL_TABS.filter((t) => tabOn(re, t)).map((t) => <button key={t} className={"tab" + (t === tab ? " active" : "")} onClick={() => setTab(t)}>{t}</button>)}
+        {multi && <button className={"tab" + (tab === "Teams" ? " active" : "")} onClick={() => setTab("Teams")}>Teams</button>}
+        <button className="tab-pin" title={"Make “" + tab + "” your default landing tab"} onClick={() => { try { localStorage.setItem("wpb_default_tab", tab); setErr(""); } catch {} }}>★ Set default</button>
+      </nav>
+      {err && <div className="err">{err}</div>}
+      <main>
+        {tab === "Overview" && tabOn(re, "Overview") && <Overview d={view} s={series} wk={curWk} ytd={ytd} onNav={setTab} cfg={re} teamBoard={rollup ? standings : null} onPickTeam={pickTeam} youTeam={editableTeam || null} />}
+        {tab === "Teams" && multi && (
+          <div className="teams-view">
+            <div className="card tlb-card">
+              <div className="card-title">Team leaderboard <span className="card-hint">ranked by GM$ · pace = actual vs goal-to-date · projection at current run-rate</span></div>
+              <TeamLeaderboard rows={standings} currentTeam={teamSel === "__all__" ? null : teamSel} youTeam={editableTeam || null} onPick={pickTeam} />
+              <div className="tlb-legend">
+                <span><span className="tlb-pill ahead">Ahead</span> at or above goal pace</span>
+                <span><span className="tlb-pill ontrack">On track</span> within 10% of pace</span>
+                <span><span className="tlb-pill behind">Behind</span> more than 10% behind</span>
+              </div>
+            </div>
+          </div>
+        )}
+        {tab === "Team Goals" && tabOn(re, "Team Goals") && <TeamGoals d={view} s={series} wk={curWk} ytd={ytd} cfg={re} />}
+        {tab === "Recruitment (Current Team)" && tabOn(re, "Recruitment (Current Team)") && <Recruitment d={view} s={series} wk={curWk} ytd={ytd} cfg={re} />}
+        {tab === "Sales" && tabOn(re, "Sales") && <Sales d={view} s={series} wk={curWk} ytd={ytd} cfg={re} onUpdateGM={canAdd ? (map) => { const nd = JSON.parse(JSON.stringify(editTarget)); for (const [name, v] of Object.entries(map)) if (nd.sales.repTotals[name]) nd.sales.repTotals[name].gm = +v || 0; commitEdit(nd); } : null} />}
+      </main>
+      {addWeekEl()}
+      {teamMgrOpen && canEditNormal && (
+        <TeamManager data={data} teams={teams} multiTeam={multi} onClose={() => { setTeamMgrOpen(false); setPendingTeam(""); }} onSplit={splitIntoTeams} onAdd={addTeam} onRename={renameTeam} onRemove={removeTeam} onImport={(name) => { setPendingTeam(name); teamCreateRef.current.click(); }} onImportInto={(tid) => { setTeamMgrOpen(false); importIntoTeam(tid); }} />
+      )}
+      {settingsOpen && (
+        <SettingsPanel data={data} cfg={getConfig(data)} dark={dark} setDark={setDark} onPreview={(c) => setCfgPreview(c)} onSave={(c) => { const nd = { ...data, config: c, brand: c.brand || data.brand }; setData(nd); persist(nd); setCfgPreview(null); setSettingsOpen(false); }} onClose={() => { setCfgPreview(null); setSettingsOpen(false); }} onDeleteWeek={() => { commitEdit(deleteLastWeek(editTarget)); setWkView(null); }} onReset={() => { clearAll(); setSettingsOpen(false); }} weekCount={totalWk} />
+      )}
+    </div>
+  );
 }
