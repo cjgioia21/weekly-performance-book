@@ -1,5 +1,11 @@
 import React, { useState, useMemo, useRef, useEffect } from "react";
 import * as XLSX from "xlsx";
+import {
+  ResponsiveContainer, ComposedChart, LineChart, BarChart, AreaChart,
+  Bar, Line, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend, PieChart, Pie, Cell,
+} from "recharts";
+import { jsPDF } from "jspdf";
+import autoTable from "jspdf-autotable";
 import { EMPTY } from "./EMPTY_DATA.js";
 
 /* ===========================================================================
@@ -626,7 +632,440 @@ export function parseWorkbook(buf) {
   return n;
 }
 
-/* ===== CHECKPOINT 1 stub App (real components + App shell added next) ===== */
+/* ======================= UI PRIMITIVES & CHARTS ======================= */
+const axis = { stroke: "var(--axis)", fontSize: 11 };
+const tip = () => ({ contentStyle: { background: "var(--tip-bg)", border: "1px solid var(--line)", borderRadius: 8, fontSize: 12, color: "var(--text)" }, labelStyle: { color: "var(--text)" }, itemStyle: { color: "var(--text)" } });
+const useEscClose = (onClose) => { useEffect(() => { const h = (e) => { if (e.key === "Escape") onClose(); }; window.addEventListener("keydown", h); return () => window.removeEventListener("keydown", h); }, [onClose]); };
+
+function KPI({ label, value, sub, delta, big, yoy, yoyLabel }) {
+  const up = delta != null && delta >= 0, yUp = yoy != null && yoy >= 0;
+  return (
+    <div className={"card kpi" + (big ? " kpi-big" : "")}>
+      <div className="kpi-label">{label}</div>
+      <div className="kpi-value">{value}</div>
+      <div className="kpi-sub">{sub}{delta != null && <span className={"chip " + (up ? "up" : "down")}>{up ? "↑" : "↓"} {Math.abs(delta).toFixed(1)}%</span>}</div>
+      {yoy != null && <div className="kpi-yoy"><span className={"chip " + (yUp ? "up" : "down")}>{yUp ? "↑" : "↓"} {Math.abs(yoy).toFixed(1)}%</span> {yoyLabel || "vs last year"}</div>}
+    </div>
+  );
+}
+
+function ProgressRing({ label, current, estimate, goal, ytdVal, estVal, fmt, explain }) {
+  const cl = (y) => (Number.isFinite(y) ? clamp01(y) : 0);
+  const A = cl(current), u = cl(estimate), c = 57, f = 43, h = 6, p = 12;
+  const d = 2 * Math.PI * c, g = 2 * Math.PI * f, m = fmt || fmtNum, v = "rg-" + label;
+  return (
+    <div className="ring">
+      <svg viewBox="0 0 130 130" width="120" height="120">
+        <defs><linearGradient id={v} x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stopColor={C.blue} /><stop offset="100%" stopColor={C.sky} /></linearGradient></defs>
+        <circle cx="65" cy="65" r={c} fill="none" stroke="var(--ring-track)" strokeWidth={h} />
+        <circle cx="65" cy="65" r={c} fill="none" stroke={C.orange} strokeWidth={h} strokeDasharray={`${d * u} ${d}`} strokeLinecap="round" transform="rotate(-90 65 65)" />
+        <circle cx="65" cy="65" r={f} fill="none" stroke="var(--ring-track)" strokeWidth={p} />
+        <circle cx="65" cy="65" r={f} fill="none" stroke={`url(#${v})`} strokeWidth={p} strokeDasharray={`${g * A} ${g}`} strokeLinecap="round" transform="rotate(-90 65 65)" />
+        <text x="65" y="62" textAnchor="middle" className="ring-pct">{Math.round(A * 100)}%</text>
+        <text x="65" y="81" textAnchor="middle" className="ring-lab">{label}</text>
+      </svg>
+      {goal != null && (
+        <div className="ring-tip" role="tooltip">
+          <div className="rt-title">{label}</div>
+          <div className="rt-row"><span>Yearly Goal</span><b>{m(goal)}</b></div>
+          <div className="rt-row"><span>Actual YTD</span><b className="blue">{m(ytdVal)}</b></div>
+          <div className="rt-row"><span>Estimated YE</span><b className="orange">{m(estVal)}</b></div>
+          <div className="rt-note">Inner ring = progress to date · outer ring = projected year-end.{explain ? " " + explain : ""}</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ProgressCard({ d, wk, ytd }) {
+  const [gmode, setGmode] = useState("Margin");
+  const a = d.teamGoals, s = a.goals || {}, o = d.currentWeek || a.totalGM.length;
+  const l = ytd ? o : wk || o, yearPct = clamp01(l / 52);
+  const u = (V) => (V || []).slice(0, l), left = Math.max(0, 52 - l);
+  const proj = (V) => { const R = u(V), Q = R.reduce((Y, J) => Y + (+J || 0), 0), G = R.slice(-8), W = G.length ? G.reduce((Y, J) => Y + (+J || 0), 0) / G.length : 0; return { avg: W, total: Q + W * left }; };
+  const rev = sum(u(a.revenue));
+  const cumGM = a.cum2026 && a.cum2026[l - 1] != null ? a.cum2026[l - 1] : sum(u(a.totalGM));
+  const pay = rev - cumGM, hc = (a.peoplePaid || [])[l - 1] || 0;
+  const marginGap = (a.revenue || []).map((V, R) => (V || 0) - ((a.totalGM || [])[R] || 0));
+  const vRev = proj(a.revenue).total, vPay = proj(marginGap).total, vGM = proj(a.totalGM).total, vHC = proj(a.peoplePaid).avg;
+  const ratio = (V, R, Q) => (Q ? { cur: clamp01(V / Q), est: clamp01(R / Q) } : { cur: 0, est: 0 });
+  const E = ratio(rev, vRev, s.bill), F = ratio(pay, vPay, s.pay), N = ratio(cumGM, vGM, s.margin);
+  const M = { cur: clamp01(hc / (s.headcount || 1)), est: clamp01(vHC / (s.headcount || 1)) }, L = N.cur;
+  if (!(s.bill || s.pay || s.margin || s.headcount)) return <div className="card progress"><div className="card-title">Progress</div><div className="empty-hint">Add annual targets (Bill, Pay, Margin, Headcount) on the Team Goals sheet to light up this card.</div></div>;
+  const isHC = gmode === "Headcount";
+  const K = (a.weeks || []).slice(0, o).map((V, R) => ({ w: (a.weekDates || [])[R] || V, Goal: isHC ? s.headcount || null : (a.budget || [])[R] || 0, Performance: isHC ? (a.peoplePaid || [])[R] || 0 : (a.totalGM || [])[R] || 0 }));
+  const paceOf = (cur) => { const gp = cur - yearPct; return gp >= 0.03 ? "ahead" : gp <= -0.03 ? "behind" : "on"; };
+  const Pace = ({ l: lbl, c: cur, goal }) => goal ? (() => { const y = paceOf(cur); return <div className={"pace " + y}><span className="pace-lbl">{lbl}</span><span className="pace-val">{y === "ahead" ? "Ahead" : y === "behind" ? "Behind" : "On pace"}</span></div>; })() : <div className="pace-spacer" />;
+  const emptyRing = (lbl) => <div className="ring-empty"><div className="ring-empty-circle">—</div><div className="ring-empty-l">{lbl}</div><div className="ring-empty-hint">No goal set</div></div>;
+  return (
+    <div className="card progress">
+      <div className="card-title">Progress<span className="card-hint">{ytd ? "year to date" : "through week " + l}</span></div>
+      <div className="bars">
+        <div className="bar-row"><div className="bar-track"><div className="bar-fill blue" style={{ width: yearPct * 100 + "%" }} /></div><span className="bar-tag blue">{Math.round(yearPct * 100)}% Year completed</span></div>
+        <div className="bar-row"><div className="bar-track"><div className="bar-fill orange" style={{ width: L * 100 + "%" }} /></div><span className="bar-tag orange">{Math.round(L * 100)}% Goal completed</span></div>
+      </div>
+      <div className="rings">
+        <div className="ring-col"><Pace l="Bill" c={E.cur} goal={s.bill} />{s.bill ? <ProgressRing label="Bill" current={E.cur} estimate={E.est} goal={s.bill} ytdVal={rev} estVal={vRev} fmt={fmtCur0} explain="Year-end estimate: last 8 weeks' pace projected across the weeks left" /> : emptyRing("Bill")}</div>
+        <div className="ring-col"><Pace l="Pay" c={F.cur} goal={s.pay} />{s.pay ? <ProgressRing label="Pay" current={F.cur} estimate={F.est} goal={s.pay} ytdVal={pay} estVal={vPay} fmt={fmtCur0} explain="Year-end estimate: last 8 weeks' pace projected across the weeks left" /> : emptyRing("Pay")}</div>
+        <div className="ring-col"><Pace l="Margin" c={N.cur} goal={s.margin} />{s.margin ? <ProgressRing label="Margin" current={N.cur} estimate={N.est} goal={s.margin} ytdVal={cumGM} estVal={vGM} fmt={fmtCur0} explain="Year-end estimate: last 8 weeks' pace projected across the weeks left" /> : emptyRing("Margin")}</div>
+        <div className="ring-col"><Pace l="Headcount" c={M.cur} goal={s.headcount} />{s.headcount ? <ProgressRing label="Headcount" current={M.cur} estimate={M.est} goal={s.headcount} ytdVal={hc} estVal={vHC} fmt={fmtNum} explain="Year-end estimate: average headcount over the last 8 weeks" /> : emptyRing("Headcount")}</div>
+        <div className="ring-legend"><div><span className="dot" style={{ background: C.blue }} /> Inner · current progress</div><div><span className="dot" style={{ background: C.orange }} /> Outer · projected year-end</div></div>
+      </div>
+      <div className="gp-head">
+        <div className="seg">{["Margin", "Headcount"].map((V) => <button key={V} className={"seg-btn" + (gmode === V ? " on" : "")} onClick={() => setGmode(V)}>{V}</button>)}</div>
+        <div className="gp-legend"><span><i className="dot" style={{ background: C.orange }} /> Goal</span><span><i className="dot" style={{ background: C.blue }} /> Performance</span></div>
+      </div>
+      <div className="gp-chart">
+        <ResponsiveContainer width="100%" height="100%">
+          <LineChart data={K} margin={{ left: 4, right: 10, top: 6, bottom: 0 }}>
+            <CartesianGrid stroke="var(--grid)" vertical={false} strokeDasharray="3 3" />
+            <XAxis dataKey="w" {...axis} interval={Math.max(0, Math.ceil(o / 6) - 1)} />
+            <YAxis {...axis} width={isHC ? 30 : 50} tickFormatter={isHC ? undefined : fmtCurK} />
+            <Tooltip {...tip()} formatter={(v) => (isHC ? fmtNum(v) : fmtCur0(v))} />
+            <Line dataKey="Goal" stroke={C.orange} strokeWidth={2.5} strokeDasharray="5 4" dot={false} type="monotone" />
+            <Line dataKey="Performance" stroke={C.blue} strokeWidth={2.5} dot={false} type="monotone" />
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
+  );
+}
+
+function ChartCard({ title, hint, children, sm, lg, wide }) {
+  return (
+    <div className={"card chart-card" + (wide ? " chart-wide" : "")}>
+      <div className="card-title">{title}{hint && <span className="card-hint">{hint}</span>}</div>
+      <div className={"chart-wrap" + (sm ? " sm" : lg ? " lg" : "")}>
+        <ResponsiveContainer width="100%" height="100%">{children}</ResponsiveContainer>
+      </div>
+    </div>
+  );
+}
+
+// Two-slice donut of prospect vs client touches.
+function TouchesDonut({ prospect, client, subtitle }) {
+  const data = [{ name: "Prospect", v: prospect || 0 }, { name: "Client", v: client || 0 }];
+  const total = (prospect || 0) + (client || 0);
+  const colors = [C.blue, C.orange];
+  return (
+    <div className="card">
+      <div className="card-title">Touch mix<span className="card-hint">{subtitle || "YTD"}</span></div>
+      <div className="chart-wrap sm">
+        <ResponsiveContainer width="100%" height="100%">
+          <PieChart>
+            <Pie data={data} dataKey="v" nameKey="name" innerRadius="55%" outerRadius="80%" paddingAngle={2}>
+              {data.map((e, i) => <Cell key={i} fill={colors[i]} />)}
+            </Pie>
+            <Tooltip {...tip()} formatter={(v) => fmtNum(v)} />
+            <Legend />
+          </PieChart>
+        </ResponsiveContainer>
+      </div>
+      <div className="donut-total">{fmtNum(total)} total touches</div>
+    </div>
+  );
+}
+
+function Funnel({ data, subtitle }) {
+  const first = data[0] ? data[0].v : 0;
+  const lastV = data.length ? data[data.length - 1].v : 0;
+  const overall = first ? (lastV / first) * 100 : 0;
+  const oa = overall < 1 ? overall.toFixed(2) : Math.round(overall) + "";
+  const palette = [C.sky, C.blue, C.violet, C.green, C.orange];
+  const max = data[0] ? data[0].v : 1;
+  const total = data.reduce((s, x) => s + (x.v || 0), 0);
+  return (
+    <div className="card">
+      <div className="card-title">Sales conversion<span className="card-hint">{subtitle || "YTD"}</span></div>
+      <div className="funnel-summary">
+        <span className="card-hint">{data[0] ? data[0].stage : ""} → {data.length ? data[data.length - 1].stage : ""}</span>
+        <span className="fs-val">{oa}% overall</span>
+      </div>
+      <div className="funnel">
+        {data.map((step, i) => {
+          const w = Math.max(7, (step.v / (max || 1)) * 100);
+          const share = total ? Math.round((step.v / total) * 100) : 0;
+          return (
+            <div key={step.stage}>
+              <div className="fn-step">
+                <div className="fn-head"><span className="fn-stage">{step.stage}</span><span className="fn-val">{fmtNum(step.v)} · {share}%</span></div>
+                <div className="fn-track"><div className="fn-bar" style={{ width: w + "%", background: palette[i % palette.length] }} /></div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+const salesFunnelFromRep = (r) => { r = r || {}; return [{ stage: "Prospect Meetings", v: +r.prospectMeetings || 0 }, { stage: "Sent", v: +r.contracts || 0 }, { stage: "Signed", v: +r.signed || 0 }, { stage: "New Clients", v: +r.newAccounts || 0 }]; };
+
+function SalesFocus({ d, s, sel, setSel }) {
+  const sales = d.sales;
+  const reps = Object.keys(sales.repTotals || {}).sort((a, b) => a.localeCompare(b));
+  const cur = sel === "All" || reps.includes(sel) ? sel : "All";
+  const rt = cur === "All" ? null : sales.repTotals[cur] || {};
+  const funnel = cur === "All" ? s.salesFunnel : salesFunnelFromRep(rt);
+  const pTouch = cur === "All" ? sum(sales.prospectTouches) : +rt.prospectTouches || 0;
+  const cTouch = cur === "All" ? sum(sales.clientTouches) : +rt.clientTouches || 0;
+  const donutSub = cur === "All" ? "YTD · prospect vs client" : "YTD · " + cur;
+  return (
+    <div className="sales-focus">
+      <div className="seg rep-seg">
+        <button className={"seg-btn" + (cur === "All" ? " on" : "")} onClick={() => setSel("All")}>All</button>
+        {reps.map((r) => <button key={r} className={"seg-btn" + (cur === r ? " on" : "")} onClick={() => setSel(r)}>{r}</button>)}
+      </div>
+      <div className="grid2">
+        <TouchesDonut prospect={pTouch} client={cTouch} subtitle={donutSub} />
+        <Funnel data={funnel} subtitle={cur === "All" ? "YTD · all reps" : "YTD · " + cur} />
+      </div>
+    </div>
+  );
+}
+
+const LB_COLS = [
+  { key: "rep", label: "Rep", type: "text" },
+  { key: "calls", label: "Prospect Attempts", type: "num" },
+  { key: "prospectDMCalls", label: "DM Calls", type: "num" },
+  { key: "prospectMeetings", label: "Prospect Mtgs", type: "num" },
+  { key: "clientMeetings", label: "Client Mtgs", type: "num" },
+  { key: "contracts", label: "Sent", type: "num" },
+  { key: "signed", label: "Signed", type: "num" },
+  { key: "firstOrder", label: "First Order", type: "num" },
+  { key: "newAccounts", label: "New Accounts", type: "num", rank: true },
+  { key: "gm", label: "New GM$", type: "num", cur: true },
+];
+
+function Leaderboard({ repTotals, onRepClick, onUpdateGM }) {
+  const [sortKey, setSortKey] = useState("newAccounts");
+  const [dir, setDir] = useState("desc");
+  const [q, setQ] = useState("");
+  const [editGM, setEditGM] = useState(false);
+  const [draft, setDraft] = useState({});
+  const rows = useMemo(() => {
+    const list = Object.entries(repTotals || {}).map(([rep, v]) => ({ rep, calls: v.calls || 0, prospectDMCalls: v.prospectDMCalls || 0, prospectMeetings: v.prospectMeetings || 0, clientMeetings: v.clientMeetings || 0, contracts: v.contracts || 0, signed: v.signed || 0, firstOrder: v.firstOrder || 0, newAccounts: v.newAccounts || 0, gm: v.gm || 0 }));
+    list.sort((a, b) => { const cmp = sortKey === "rep" ? a.rep.localeCompare(b.rep) : (a[sortKey] || 0) - (b[sortKey] || 0); return dir === "asc" ? cmp : -cmp; });
+    return list;
+  }, [repTotals, sortKey, dir]);
+  const onSort = (key) => { if (key === sortKey) setDir((d) => (d === "asc" ? "desc" : "asc")); else { setSortKey(key); setDir(key === "rep" ? "asc" : "desc"); } };
+  const arrow = (key) => (sortKey === key ? (dir === "asc" ? " ▲" : " ▼") : "");
+  const rankCol = LB_COLS.find((c) => c.rank).key;
+  const save = () => { if (onUpdateGM) onUpdateGM(draft); setEditGM(false); setDraft({}); };
+  return (
+    <div className="card lb-card">
+      <div className="card-title">Rep leaderboard
+        <span className="card-hint">{editGM ? "enter season-to-date GM$ per rep, then Done" : "click a column to sort · ranked by " + LB_COLS.find((c) => c.key === sortKey).label.toLowerCase()}</span>
+        <input className="tbl-search" placeholder="Search rep…" value={q} onChange={(e) => setQ(e.target.value)} />
+        {onUpdateGM && <button className="btn ghost xs" onClick={() => (editGM ? save() : setEditGM(true))}>{editGM ? "Done" : "Edit GM$"}</button>}
+      </div>
+      <div className="lb-scroll">
+        <table className="lb">
+          <thead><tr>{LB_COLS.map((c) => <th key={c.key} className={(c.type === "num" ? "num " : "") + (c.key === sortKey ? "active " : "") + (c.rank ? "rank-col" : "")} onClick={() => onSort(c.key)}>{c.label}{arrow(c.key)}</th>)}</tr></thead>
+          <tbody>
+            {rows.filter((r) => !q || r.rep.toLowerCase().includes(q.toLowerCase())).map((r) => (
+              <tr key={r.rep} className={onRepClick && !editGM ? "lb-row" : ""} onClick={() => onRepClick && !editGM && onRepClick(r.rep)}>
+                <td className="rep-name">{sortKey !== "rep" && <span className="rank-badge">{rows.indexOf(r) + 1}</span>}{r.rep}</td>
+                <td className="num">{fmtNum(r.calls)}</td>
+                <td className="num">{r.prospectDMCalls}</td>
+                <td className="num">{r.prospectMeetings}</td>
+                <td className="num">{r.clientMeetings}</td>
+                <td className="num">{r.contracts}</td>
+                <td className="num">{r.signed}</td>
+                <td className="num">{r.firstOrder}</td>
+                <td className={"num" + (rankCol === sortKey ? " active" : "")}>{r.newAccounts}</td>
+                <td className={"num" + (sortKey === "gm" ? " active" : "")} onClick={(e) => editGM && e.stopPropagation()}>
+                  {editGM ? <input className="gm-inp" type="number" min="0" step="0.01" placeholder="0" value={draft[r.rep] ?? ""} onChange={(e) => setDraft((s) => ({ ...s, [r.rep]: e.target.value }))} /> : fmtCur0(r.gm)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function useSeries(d) {
+  return useMemo(() => {
+    const t = d.teamGoals, r = d.recruitment, n = d.sales;
+    for (const k of ["cum2026", "cum2025", "gmPerHour", "gmPct", "ytdFill"]) if (!Array.isArray(t[k])) t[k] = t.totalGM.map(() => 0);
+    if (Array.isArray(t.ytdFillSheet) && t.ytdFillSheet.length) t.ytdFill = t.ytdFillSheet.map((x) => +x || 0);
+    else if (Array.isArray(t.weeklyFill)) { let c = 0; t.ytdFill = t.weeklyFill.map((g, m) => (c += Math.min(1, Math.max(0, +g || 0)), +(c / (m + 1)).toFixed(4))); }
+    const wl = (i) => t.weekDates[i] || t.weeks[i] || "W" + (i + 1);
+    const gmVsBudget = t.tempGM.map((v, i) => ({ w: wl(i), "GM$": Math.round(v), Budget: Math.round(t.budget[i] || 0) }));
+    const cumRace = t.cum2026.map((v, i) => ({ w: wl(i), 2026: Math.round(v), 2025: Math.round(t.cum2025[i] || 0) }));
+    const revHead = t.revenue.map((v, i) => ({ w: wl(i), Revenue: Math.round(v), Headcount: t.peoplePaid[i] || 0 }));
+    const tempOrders = t.newTempOrders.map((v, i) => ({ w: wl(i), New: v || 0, Open: t.openTempOrders[i] || 0 }));
+    const funnel = [{ stage: "Interviews", v: sum(r.total.interviews) }, { stage: "Submittals", v: sum(r.total.submittals) }, { stage: "Registered", v: sum(r.total.registered) }, { stage: "Starts", v: sum(r.total.starts) }];
+    const netHC = r.total.starts.map((v, i) => ({ w: wl(i), Net: (v || 0) - (r.total.ends[i] || 0) }));
+    const gmContrib = (r.recruiters || []).map((x) => ({ name: x.name, v: Math.round(sum(x.gm)) }));
+    const outreach = n.totalCalls.map((v, i) => ({ w: wl(i), Calls: v || 0, Prospect: n.prospectTouches[i] || 0, Client: n.clientTouches[i] || 0 }));
+    const touchSplit = [{ name: "Prospect", v: sum(n.prospectTouches) }, { name: "Client", v: sum(n.clientTouches) }];
+    const salesFunnel = [{ stage: "Meetings", v: sum(n.prospectMeetings) + sum(n.clientMeetings) }, { stage: "Sent", v: sum(n.contractsSent) }, { stage: "Signed", v: sum(n.contractsSigned) }, { stage: "New Clients", v: sum(n.newClients) }];
+    return { gmVsBudget, cumRace, revHead, tempOrders, funnel, netHC, gmContrib, outreach, touchSplit, salesFunnel };
+  }, [d]);
+}
+
+function Insights({ d }) {
+  const t = d.teamGoals, i = (t.totalGM || []).length;
+  if (!i) return null;
+  const a = [];
+  if (i >= 2) { const l = t.totalGM[i - 1], A = t.totalGM[i - 2], u = A ? ((l - A) / A) * 100 : 0; a.push({ tag: "Trend", title: "Total GM$ " + (u >= 0 ? "up " : "down ") + Math.abs(u).toFixed(0) + "% WoW", sub: fmtCur0(l) + " this week", tone: u >= 0 ? "up" : "down" }); }
+  const best = t.totalGM.reduce((l, A, u, c) => (A > c[l] ? u : l), 0);
+  a.push({ tag: "Best week", title: t.weekDates[best] || "W" + (best + 1), sub: fmtCur0(t.totalGM[best]) + " GM$", tone: "up" });
+  a.push({ tag: "Hours", title: fmtNum((t.hours || [])[i - 1] || 0), sub: "this week", tone: "" });
+  a.push({ tag: "Clients", title: fmtNum((t.clientsBilled || [])[i - 1] || (t.newClients || [])[i - 1] || 0), sub: "this week", tone: "" });
+  const fill = (t.weeklyFill || [])[i - 1];
+  if (fill != null) a.push({ tag: "Fill rate", title: fmtPct(fill) + " this week", sub: fill >= 0.8 ? "on target" : "below 80%", tone: fill >= 0.8 ? "up" : "warn" });
+  return <div className="insights">{a.slice(0, 4).map((l, A) => <div key={A} className={"insight " + l.tone}><div className="ins-tag">{l.tag}</div><div className="ins-title">{l.title}</div><div className="ins-sub">{l.sub}</div></div>)}</div>;
+}
+
+function PeriodCompare({ d }) {
+  const t = d.teamGoals, r = d.sales, n = (t.totalGM || []).length;
+  const [win, setWin] = useState(4);
+  const [mode, setMode] = useState("prior");
+  const lyKey = String((d._year || new Date().getFullYear()) - 1);
+  const arc = d.archive && d.archive[lyKey];
+  const hasLY = !!(arc && arc.teamGoals && (arc.teamGoals.totalGM || []).length);
+  const cmpLY = mode === "lastyear" && hasLY;
+  let f = 0;
+  for (let y = 0; y < n; y++) if ((t.totalGM[y] || 0) !== 0 || (t.hours[y] || 0) > 0 || (t.revenue[y] || 0) !== 0) f = y + 1;
+  if (!f) f = n;
+  if (f < 2) return null;
+  const rangeSum = (y, from, to) => (y || []).slice(from, to).reduce((s, e) => s + (+e || 0), 0);
+  const p = Math.max(0, f - win), dEnd = f, g = Math.max(0, f - 2 * win), m = p;
+  const rows = [
+    { label: "Total GM$", arr: t.totalGM, ly: cmpLY && arc.teamGoals.totalGM, fmt: fmtCur0 },
+    { label: "Revenue", arr: t.revenue, ly: cmpLY && arc.teamGoals.revenue, fmt: fmtCur0 },
+    { label: "Hours Worked", arr: t.hours, ly: cmpLY && arc.teamGoals.hours, fmt: (y) => fmtNum(Math.round(y)) },
+    { label: "Sales Calls", arr: r.totalCalls, ly: cmpLY && arc.sales && arc.sales.totalCalls, fmt: fmtNum },
+    { label: "New Clients", arr: t.newClients, ly: cmpLY && arc.teamGoals.newClients, fmt: fmtNum },
+  ];
+  return (
+    <div className="card pc-card">
+      <div className="card-title">Period comparison<span className="card-hint">{cmpLY ? "vs same period " + lyKey : "current vs prior"}</span></div>
+      <div className="pc-controls">
+        <div className="seg pc-seg">{[["Week", 1], ["4 Weeks", 4], ["13 Weeks", 13]].map(([lbl, v]) => <button key={v} className={"seg-btn" + (win === v ? " on" : "")} onClick={() => setWin(v)}>{lbl}</button>)}</div>
+        {hasLY && <div className="seg pc-seg">{[["Prior period", "prior"], ["Last year", "lastyear"]].map(([lbl, v]) => <button key={v} className={"seg-btn" + (mode === v ? " on" : "")} onClick={() => setMode(v)}>{lbl}</button>)}</div>}
+      </div>
+      <div className="pc-rows">
+        {rows.map((y) => {
+          const cur = rangeSum(y.arr, p, dEnd);
+          let prev;
+          if (cmpLY) { const F = y.ly || []; prev = rangeSum(F, Math.max(0, Math.min(p, F.length)), Math.min(dEnd, F.length)); }
+          else prev = rangeSum(y.arr, g, m);
+          const delta = prev ? ((cur - prev) / prev) * 100 : cur ? 100 : 0;
+          return (
+            <div key={y.label} className="pc-row">
+              <span className="pc-label">{y.label}</span>
+              <span className="pc-cur">{y.fmt(Math.round(cur))}</span>
+              <span className="pc-prev">from {y.fmt(Math.round(prev))}{cmpLY ? " in " + lyKey : ""}</span>
+              <span className={"pc-delta " + (cur >= prev ? "up" : "down")}>{(delta >= 0 ? "+" : "") + delta.toFixed(0)}%</span>
+            </div>
+          );
+        })}
+      </div>
+      <div className="pc-note">{cmpLY ? "Weeks " + (p + 1) + "–" + dEnd + " this year vs the same weeks in " + lyKey + "." : "Last " + (win === 1 ? "week" : win + " weeks") + " vs the prior " + (win === 1 ? "week" : win + " weeks") + "."}</div>
+    </div>
+  );
+}
+
+function RepProfile({ rep, d, onClose }) {
+  useEscClose(onClose);
+  const n = (d.sales.repTotals || {})[rep] || {};
+  const hist = (d._weekLedger || []).map((o) => { const l = (o.reps && o.reps[rep]) || {}; return { w: "W" + o.week, Calls: +l.calls || 0, Meetings: (+l.prospectMeetings || 0) + (+l.clientMeetings || 0), Signed: +l.signed || 0, New: +l.newAccounts || 0 }; });
+  const stats = [["Calls", n.calls], ["Prospect Mtgs", n.prospectMeetings], ["Client Mtgs", n.clientMeetings], ["Sent", n.contracts], ["Signed", n.signed], ["First Order", n.firstOrder], ["New Accts", n.newAccounts], ["GM$", n.gm]];
+  return (
+    <div className="modal-back" onClick={onClose}>
+      <div className="modal wide" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head"><div className="modal-title">{rep} · rep profile</div><button className="x" onClick={onClose} aria-label="Close">×</button></div>
+        <div className="modal-body">
+          <div className="rp-totals">{stats.map(([lbl, v]) => <div key={lbl} className="rp-stat"><div className="rp-stat-v">{lbl === "GM$" ? fmtCur0(+v || 0) : fmtNum(+v || 0)}</div><div className="rp-stat-l">{lbl}</div></div>)}</div>
+          {hist.length ? (
+            <div className="chart-wrap lg">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={hist} margin={{ left: 4, right: 10, top: 8, bottom: 0 }}>
+                  <CartesianGrid stroke="var(--grid)" vertical={false} />
+                  <XAxis dataKey="w" {...axis} /><YAxis {...axis} /><Tooltip {...tip()} /><Legend />
+                  <Line dataKey="Calls" stroke={C.sky} strokeWidth={2} dot={false} />
+                  <Line dataKey="Meetings" stroke={C.blue} strokeWidth={2} dot={false} />
+                  <Line dataKey="Signed" stroke={C.green} strokeWidth={2} dot={false} />
+                  <Line dataKey="New" stroke={C.orange} strokeWidth={2} dot={false} />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          ) : <div className="empty-hint">Week-by-week history appears here once weeks are added in-app. Imported spreadsheets only carry season-to-date totals.</div>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TeamManager({ data, teams, multiTeam, onClose, onSplit, onAdd, onRename, onRemove, onImport, onImportInto }) {
+  const [newName, setNewName] = useState("");
+  const [firstName, setFirstName] = useState("Team 1");
+  const [editId, setEditId] = useState(null);
+  const [editName, setEditName] = useState("");
+  const [confirmRemove, setConfirmRemove] = useState(null);
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal team-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head"><h3>{multiTeam ? "Manage teams" : "Set up teams"}</h3><button className="x" onClick={onClose}>×</button></div>
+        <div className="modal-body">
+          {!multiTeam ? (
+            <div className="tm-intro">
+              <p>Split this company into multiple teams or locations. Your current data becomes the first team — then you can add more, each with its own weekly numbers. The company admin sees an "All teams" roll-up plus each team on its own.</p>
+              <label className="tm-label">Name your current team</label>
+              <input className="inp" value={firstName} onChange={(e) => setFirstName(e.target.value)} placeholder="e.g. Toronto, Head Office" />
+              <button className="btn primary" onClick={() => { onSplit(firstName); onClose(); }}>Split into teams</button>
+            </div>
+          ) : (
+            <>
+              <div className="tm-list">
+                {teams.map((t) => (
+                  <div className="tm-row" key={t.id}>
+                    {editId === t.id ? (
+                      <><input className="inp tm-edit" value={editName} autoFocus onChange={(e) => setEditName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { onRename(t.id, editName); setEditId(null); } }} /><button className="btn sm primary" onClick={() => { onRename(t.id, editName); setEditId(null); }}>Save</button><button className="btn sm ghost" onClick={() => setEditId(null)}>Cancel</button></>
+                    ) : confirmRemove === t.id ? (
+                      <><span className="tm-name">Remove "{t.name}"?</span><button className="btn sm danger" onClick={() => { onRemove(t.id); setConfirmRemove(null); }}>Remove</button><button className="btn sm ghost" onClick={() => setConfirmRemove(null)}>Keep</button></>
+                    ) : (
+                      <><span className="tm-name">{t.name}</span><span className="tm-meta">{(data.teams[t.id] && data.teams[t.id].currentWeek) || 0} weeks</span>{onImportInto && <button className="btn sm ghost" title={"Replace " + t.name + "'s data from a spreadsheet"} onClick={() => onImportInto(t.id)}>Import data</button>}<button className="btn sm ghost" onClick={() => { setEditId(t.id); setEditName(t.name); }}>Rename</button><button className="btn sm ghost danger-text" onClick={() => setConfirmRemove(t.id)}>Remove</button></>
+                    )}
+                  </div>
+                ))}
+              </div>
+              <div className="tm-add">
+                <div className="tm-label">Add a team</div>
+                <div className="tm-add-row">
+                  <input className="inp" value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="New team / location name" />
+                  <button className="btn ghost" disabled={!newName.trim()} onClick={() => { onAdd(newName); setNewName(""); }} title="Create an empty team">+ Empty</button>
+                  <button className="btn primary" disabled={!newName.trim()} onClick={() => { onImport(newName.trim()); }} title="Create the team by importing a workbook">+ Import</button>
+                </div>
+                <div className="tm-hint">"Empty" creates a team you can enter weeks into. "Import" creates it from a spreadsheet.</div>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ===== STUBS — reconstructed in later checkpoints ===== */
+const extractBrandFromLogo = async () => null;
+function downloadPDF() {}
+function RecProfile({ onClose }) { useEscClose(onClose); return <div className="modal-back" onClick={onClose}><div className="modal" onClick={(e) => e.stopPropagation()}><div className="modal-body">Recruiter profile — pending reconstruction.</div></div></div>; }
+function Commission() { return null; }
+function Overview(props) { return <div className="empty-hint">Overview — pending reconstruction.</div>; }
+function TeamGoals() { return <div className="empty-hint">Team Goals — pending reconstruction.</div>; }
+function Recruitment() { return <div className="empty-hint">Recruitment — pending reconstruction.</div>; }
+function Sales() { return <div className="empty-hint">Sales — pending reconstruction.</div>; }
+function RecruiterScorecard() { return <div className="empty-hint">Recruiter scorecard — pending reconstruction.</div>; }
+function AddWeekModal({ onClose }) { useEscClose(onClose); return <div className="modal-back" onClick={onClose}><div className="modal" onClick={(e) => e.stopPropagation()}><div className="modal-body">Add week — pending reconstruction.</div></div></div>; }
+function SettingsPanel({ onClose }) { useEscClose(onClose); return <div className="modal-back" onClick={onClose}><div className="modal" onClick={(e) => e.stopPropagation()}><div className="modal-body">Settings — pending reconstruction.</div></div></div>; }
+function SetupWizard() { return <div className="empty-hint">Setup wizard — pending reconstruction.</div>; }
+
+/* ===== CHECKPOINT 2 stub App (App shell reconstructed next) ===== */
 export default function App() {
-  return <div className="welcome"><h1>Reconstruction — checkpoint 1 (logic layer)</h1><p>Engine, Excel export &amp; parser reconstructed. Components + App shell next.</p></div>;
+  return <div className="welcome"><h1>Reconstruction — checkpoint 2 (UI primitives)</h1><p>Charts, KPIs, leaderboard, progress rings, period comparison reconstructed.</p></div>;
 }
