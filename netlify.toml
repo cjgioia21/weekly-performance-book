@@ -1,0 +1,18 @@
+# Netlify configuration for Weekly Performance Book.
+# Two ways to deploy:
+#   1. Git-connected site: Netlify runs the build below on every push.
+#   2. Manual drag-and-drop: drop dist/index.html onto the site's Deploys tab
+#      (it's already built).
+
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+[build.environment]
+  NODE_VERSION = "20"
+
+# Single static file, no client-side routing — every path serves the dashboard.
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
